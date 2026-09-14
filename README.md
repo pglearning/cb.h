@@ -5,7 +5,7 @@
 
 单文件、零依赖、C11。`#include "cb.h"` 之后所有功能立即可用，**不需要 `#define CB_IMPLEMENTATION`**。
 
-Prototype author: https://github.com/tsoding/nob.h
+Original author: https://github.com/tsoding/nob.h
 
 ```console
 $ cc -o cb cb.c && ./cb test
