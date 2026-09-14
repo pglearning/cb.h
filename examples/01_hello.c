@@ -5,7 +5,7 @@
 // 编译运行（在仓库根目录）：
 //     cc -o /tmp/ex01 examples/01_hello.c && /tmp/ex01
 
-#include "../cb.h" // 必须是第一个 include
+#include "../cb.h" // 推荐放最前面，但不是必须：cb.h 不是第一个 include 也能编译
 
 int main(void)
 {

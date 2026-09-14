@@ -108,7 +108,6 @@ static void demo_time(void)
 
     cb_timer_reset();
     printf("    cb_timer_reset() 之后统计表已清空\n");
-    printf("    cb_timer_reset() 之后统计表已清空\n");
 
     printf("\n  底层时间源：cb_get_time_ms() = %.3f，cb_get_time_us() = %.1f\n",
            cb_get_time_ms(), cb_get_time_us());

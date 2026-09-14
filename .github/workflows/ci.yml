@@ -19,6 +19,35 @@ jobs:
       - name: 跑测试（含双编译器 C++ 兼容性检查）
         run: ./cb test
 
+      - name: 跑全部示例（${{ matrix.cc }} -x ${{ matrix.lang }}）
+        # 示例必须真的跑起来：02/03/04 会自己去编译 cb.c 与 examples/01_hello.c，
+        # 路径或命令行写错只有跑过才发现（本地不跑就等于没检查）。
+        # 示例的输出是给人看的说明（14 个共 800 多行），矩阵里再乘 4 份会淹没日志，
+        # 所以收进 build/examples.log：成功报一行，失败打印末尾 200 行——
+        # 编译错误与 "example X failed" 都在里面，够定位。
+        run: |
+          mkdir -p build
+          if ./cb examples > build/examples.log 2>&1; then
+            echo "全部示例通过（$(wc -l < build/examples.log) 行完整输出收在 build/examples.log）"
+          else
+            echo "::error::./cb examples 失败，以下是输出末尾 200 行"
+            tail -n 200 build/examples.log
+            exit 1
+          fi
+
+  bench:
+    # 基准单独一个 job：它只在 -O2 下有意义，跟着 linux job 的 4 个矩阵组合跑等于把同一份
+    # 数字测 4 遍。这里用默认 cc 编一次构建脚本，跑完整套基准，退出码必须为 0。
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 构建构建脚本
+        run: cc -o cb cb.c
+
+      - name: 跑性能基准
+        run: ./cb bench
+
   cxx-tests:
     # 为什么单独一个 job：linux job 里 C++ 那两个组合已经在跑 ./cb test，但本地开发者
     # 通常只跑 C 模式，"指定初始化器顺序不对"和"{0} 在 C++ 下的告警"这两类问题就只会在

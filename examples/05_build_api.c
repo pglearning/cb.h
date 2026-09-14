@@ -405,7 +405,7 @@ static void demo_self_rebuild(void)
     printf("  CB_SELF_REBUILD_PLUS(argc, argv, ...) 会：\n");
     printf("    1) 比较可执行文件与列出的源文件的修改时间\n");
     printf("    2) 需要时重新编译自己并重新执行（路径相对当前工作目录）\n");
-    printf("    3) 本示例的 main 开头就调用了它，只是当前总是最新的，所以没触发\n");
+    printf("    3) 用法就是在 main 开头调用一次（cb.c 与 02/03/04 示例都这么做）\n");
 }
 
 int main(void)

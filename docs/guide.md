@@ -23,6 +23,7 @@ $ ./cb examples     # 编译并运行全部示例
 | 内存 | `11_memory` |
 | 日志与 panic | `12_logging` |
 | 工具箱 | `13_toolbox` |
+| 编译期开关 | `14_config_switches` |
 
 性能基准与示例/测试是分开的：`./cb bench`（源码在 [`bench/`](../bench/)，说明见它的 README）。
 
@@ -80,7 +81,7 @@ $ cc -c a.c && cc -c b.c && cc a.o b.o -o app
 
 cb.h 的主用途。核心是"用 C 写构建逻辑"，不需要 Make/CMake/Shell。
 
-完整可运行示例：[`examples/01_build_script.c`](../examples/01_build_script.c)
+完整可运行示例：[`examples/01_hello.c`](../examples/01_hello.c)
 
 ### 1.1 自重建
 
@@ -152,6 +153,49 @@ cb_da_free(chain.cmd);
 ```
 
 `cb_chain_cmd(&chain, &cmd, .err2out = true)` 会把该段的 stderr 并进 stdout。
+
+### 1.5 C Builder：编译器与选项从哪来
+
+不要在调用处硬写 `"cc"` 和一长串 flag，交给 cb.h 的四个宏，换平台 / 换语言模式时只改一处：
+
+| 宏 | 作用 |
+|---|---|
+| `cb_cc(cmd)` | 追加编译器驱动命令 |
+| `cb_cc_flags(cmd)` | 追加告警 / 语言标准 / 调试信息标志 |
+| `cb_cc_output(cmd, path)` | 追加输出参数（Unix 是 `-o path`，MSVC 是 `/Fe:path` `/Fo:path`） |
+| `cb_cc_inputs(cmd, ...)` | 追加输入文件（默认原样追加，留它是为了 MSVC 这类平台能统一改写） |
+
+四个宏都自带默认值，直接就能用。默认值按平台与**构建脚本自己被编译时的**语言模式分
+（`-I.` 是"当前目录当头文件搜索路径"，构建脚本通常就在项目根跑）：
+
+| 场景 | `cb_cc` | `cb_cc_flags` |
+|---|---|---|
+| C（Linux 等） | `cc` | `-Wall -Wextra -Wswitch-enum -std=c11 -D_POSIX_C_SOURCE=200809L -ggdb -I.` |
+| C（macOS） | `cc` | `-Wall -Wextra -Wswitch-enum -I.`（加 `-std=c11` / `-D_POSIX_C_SOURCE` 会藏掉需要的符号） |
+| C（FreeBSD） | `cc` | `-Wall -Wextra -Wswitch-enum -std=c11 -ggdb -I.` |
+| C（MSVC） | `cl.exe` | `/TC /W4 /nologo /D_CRT_SECURE_NO_WARNINGS -I.` |
+| C++（非 MSVC） | `cc -x c++` | `-Wall -Wextra -Wno-missing-field-initializers -Wswitch-enum -ggdb -I.` |
+| C++（MSVC） | `cl.exe` | `/std:c++20 /TP /W4 /nologo /D_CRT_SECURE_NO_WARNINGS -I.` |
+
+默认值里**没有**项目自己的东西：没有 `-O2`（`./cb bench` 自己追加）、没有项目特定的 `-D`、
+没有 `-std=c++17` 这类 C++ 标准版本、没有 `-l` 链接库、没有 `-rdynamic`。
+所以真实项目的构建脚本通常会把 `cb_cc` / `cb_cc_flags` 整对顶掉。
+
+**覆盖方式**：宏是 `#ifndef` 守卫的，在 `#include "cb.h"` **之前**定义自己的版本即可
+（定义在 include 之后等于重定义宏，头文件里早已展开过默认值）：
+
+```c
+// 编译器与 flag 只在这一处定义，调用处不再出现 "cc" 与一长串选项
+#define cb_cc(cmd)       cb_cmd_append(cmd, "cc")
+#define cb_cc_flags(cmd) cb_cmd_append(cmd, "-Wall", "-Wextra", "-std=gnu11", "-I.", "-Iinclude")
+#include "cb.h"
+```
+
+两个宏的覆盖是独立的：只定义 `cb_cc_flags` 时 `cb_cc` 仍是默认值，反之也一样。
+
+**实例**：[`cb.c` 开头](../cb.c)就顶掉了整对（C++ 下带 `-x c++`），所以 `./cb` 自己、测试、
+示例、基准用的是同一套选项。C 模式默认给 `-std=c11` 而不是 `-std=c99`：C11 是 cb.h 的基线，
+库本身就要 `_Thread_local` / `alignof` 这些 C11 才有的东西。
 
 ---
 
@@ -670,7 +714,7 @@ wine-mono / wine-gecko 安装提示。cb.h 的测试只依赖 `KERNEL32.dll` 与
 ```console
 $ tools/verify-sanitizers.sh            # 全部测试
 $ tools/verify-sanitizers.sh arena map  # 只跑指定的测试
-$ tools/verify-sanitizers.sh --examples # 13 个示例也扫一遍
+$ tools/verify-sanitizers.sh --examples # 14 个示例也扫一遍
 ```
 
 这是**独立于"测试全绿"的另一条证据链**：功能测试只证明"结果对不对"，
@@ -699,7 +743,47 @@ CI 里也有对应的 `sanitizers` 任务。
 
 ---
 
-## 11. 设计取舍
+## 11. 编译期开关
+
+下面 17 个开关都在 `#include "cb.h"` **之前**定义才生效（头文件里那份是 `#ifndef` 守卫的默认值，
+定义晚了只是宏重定义）；只有标了**直接 `#define`** 的两个例外，它们要改头文件里那处定义本身。逐个开关
+的可运行示例见 [`examples/14_config_switches.c`](../examples/14_config_switches.c)。
+
+**① 行为开关（默认全关）**
+
+| 宏 | 作用 | 默认值 |
+|---|---|---|
+| `CB_ENABLE_ECHO` | 文件系统 / 命令等操作打印提示信息（能看到实际执行的 `CMD:` 行） | 关 |
+| `CB_DONT_DELETE_OLD_CB` | 自重建时保留上一次的旧二进制（`.old`）便于排查 | 关（旧的会被删掉） |
+| `CB_TRACE_CMD_RUN_FAIL_LOCATION` | 命令失败时打印它的调用点（`文件:行号`） | 关 |
+| `CB_ALLOC_TRACK` | 每次分配带追踪头，可 `cb_alloc_report()` 统计与报告泄漏（见 4.4） | 关 |
+| `CB_STRIP_PREFIX` | 生成去 `cb_` / `CB_` 前缀的别名，写 `temp_sprintf` / `String_View` | 关 |
+| `CB_SHARED_STATE` + `CB_SHARED_STATE_IMPL` | 多 TU 共享全局状态：所有 TU 定义前者、**恰好一个** TU 定义后者（见 0.③） | 关（每 TU 一份） |
+| `CB_OOM(size)` | 顶掉默认的 OOM 处理器，必须不返回（见 4.3） | 打印后 `abort` |
+| `CB_WARN_DEPRECATED` | 让 `CB_DEPRECATED` 真的展开成编译器的 deprecated 属性 | 关（标了也不报警告） |
+
+**② 容量 / 参数微调（都是数值）**
+
+| 宏 | 作用 | 默认值 |
+|---|---|---|
+| `CB_PATH_MAX` | 路径缓冲上限 | `PATH_MAX`；系统没定义时 4096 |
+| `CB_TIMER_MAX_DEPTH` | 计时器嵌套深度上限（统计表本身按需增长，不是条目上限） | 64 |
+| `CB_ARENA_REGION_INIT_CAPACITY` | arena / temp 首块容量（写满自动追加新块，不是总量上限） | 64KB |
+| `CB_ARENA_ALIGN` | arena 分配对齐 | `alignof(max_align_t)` |
+| `CB_THREAD_LOCAL` | 线程局部存储说明符，单线程程序定义成空可省掉 TLS 开销 | C 下 `_Thread_local`，C++ 下 `thread_local` |
+| `CB_DA_INIT_CAP` | 动态数组首次扩容的容量 | 256 |
+| `CB_BITSET_WORD_BITS` | 位图一个字多少位 | 64 |
+| `CB_MAP_INIT_CAPACITY` | HashMap 初始桶数（到负载上限后按 2 倍增长） | 16 |
+| `CB_WIN32_ERR_MSG_SIZE` | Windows 错误信息缓冲大小（非 Windows 无效果） | 4KB |
+
+另外几个只影响单个模块的开关写在各自小节里，用法同样是"在 include 之前定义"：
+`CB_REALLOC` / `CB_FREE`（内存分配收口，见 4.4）、`CB_TEMP_CAPACITY`（temp 首块容量，
+默认跟 `CB_ARENA_REGION_INIT_CAPACITY` 走）、`CB_ASSERT`（断言实现，默认 `assert`）、
+`CB_PANIC_BACKTRACE`（panic 时打印调用栈，默认 Linux/glibc 下开、其余平台关，见第 7 节）。
+
+---
+
+## 12. 设计取舍
 
 完整的清单在 cb.h 头部的"设计取舍"一节，这里只列结论。
 

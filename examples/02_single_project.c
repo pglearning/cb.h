@@ -1,149 +1,64 @@
 // 示例 02：单项目构建
 //
-// 最常见的用法：项目根目录放一个构建脚本，负责把本项目编译出来。
-// 为了让示例自包含（在哪儿跑都行），这里不读真实目录，而是在运行时生成一个
-// 小项目再构建它；真实项目里把 generate_demo_project() 删掉即可。
+// 最小可用的构建脚本：一个真实存在的源文件 -> 一个可执行文件 -> 运行它。
+// 整个流程就是 cb.c 里 build_and_run_test 的骨架：拼命令 -> 跑命令 -> free(cmd.items)。
 //
-// 编译运行（在仓库根目录）：
+// 编译运行（在仓库根目录，示例里的路径都相对当前工作目录）：
 //     cc -o /tmp/ex02 examples/02_single_project.c && /tmp/ex02
-//     /tmp/ex02 clean       # 清理
 
-#define CB_ENABLE_ECHO // 打开"创建目录/执行命令"提示
+// 构建相关的编译期开关：必须定义在 #include 之前才生效（cb.h 在这一行就编译完了）
+#define CB_ENABLE_ECHO                     // 打印文件系统/命令操作的提示，能看到实际执行的 CMD 行
+// #define CB_DONT_DELETE_OLD_CB           // 保留上一次编译出的旧二进制，自重建时不删旧的
+// #define CB_TRACE_CMD_RUN_FAIL_LOCATION  // 命令失败时打印它的调用点（文件:行号）
+// #define CB_ALLOC_TRACK                  // 每次分配带追踪头，可用 cb_alloc_report() 报告泄漏
 #include "../cb.h"
 
-#define DEMO_ROOT "./build/examples/single/"
-#define SRC_DIR DEMO_ROOT "src/"
-#define OUT_DIR DEMO_ROOT "build/"
-#define APP OUT_DIR "app"
+#define OUT_DIR "./build/examples/single/"
+#define SRC_PATH "cb.c" // 真实文件：本项目的构建脚本自己
 
-// ---------------------------------------------------------------- 演示用的小项目
-static bool generate_demo_project(void)
-{
-    bool result = true;
-    CB_String_Builder sb = CB_ZERO;
+const char* project_names[] = {"app"};
+#define project_names_count CB_ARRAY_LEN(project_names)
 
-    if (!cb_mkdir_if_not_exists(SRC_DIR)) cb_return_defer(false);
-
-    cb_sb_append_cstr(&sb,
-        "#ifndef GREET_H\n#define GREET_H\n"
-        "const char* greet(void);\n"
-        "int add(int a, int b);\n"
-        "#endif\n");
-    if (!cb_write_entire_file(SRC_DIR "greet.h", sb.items, sb.count)) cb_return_defer(false);
-
-    sb.count = 0;
-    cb_sb_append_cstr(&sb,
-        "#include \"greet.h\"\n"
-        "const char* greet(void) { return \"hello from a generated project\"; }\n"
-        "int add(int a, int b) { return a + b; }\n");
-    if (!cb_write_entire_file(SRC_DIR "greet.c", sb.items, sb.count)) cb_return_defer(false);
-
-    sb.count = 0;
-    cb_sb_append_cstr(&sb,
-        "#include <stdio.h>\n"
-        "#include \"greet.h\"\n"
-        "int main(void) { printf(\"%s\\n\", greet()); printf(\"2 + 3 = %d\\n\", add(2, 3)); return 0; }\n");
-    if (!cb_write_entire_file(SRC_DIR "main.c", sb.items, sb.count)) cb_return_defer(false);
-
-    cb_log(CB_INFO, "已生成演示项目到 %s", DEMO_ROOT);
-
-defer:
-    cb_sb_free(sb);
-    return result;
-}
-
-// ---------------------------------------------------------------- 构建
-static bool build_project(void)
+// 构建 project_names 里的一个目标并运行它
+bool build_and_run(const char* name)
 {
     bool result = true;
     CB_Cmd cmd = CB_ZERO;
-    CB_Procs procs = CB_ZERO;
-    // C++ 下 cb_return_defer（内部是 goto defer）要求所有变量声明写在第一个 goto 之前，
-    // 所以 needs_link 在这里先声明、后面再赋值。
-    int needs_link = 0;
-
-    static const char* sources[] = {"main.c", "greet.c"};
-    static const char* objects[] = {OUT_DIR "main.o", OUT_DIR "greet.o"};
+    const char* bin_path = cb_temp_sprintf("%s%s", OUT_DIR, name);
 
     if (!cb_mkdir_if_not_exists(OUT_DIR)) cb_return_defer(false);
 
-    // 1) 逐个编译。.async 让它们并行跑，.max_procs 限制并发数。
-    for (size_t i = 0; i < CB_ARRAY_LEN(sources); ++i) {
-        const char* src = cb_temp_sprintf("%s%s", SRC_DIR, sources[i]);
-        const char* obj = objects[i];
+    // 编译：cb_cc 选编译器，cb_cc_flags 加参数，cb_cc_output / cb_cc_inputs 指定输出与输入。
+    // 这三个宏按平台展开（MSVC 用 cl.exe，其余用 cc），所以构建脚本里不写死编译器。
+    cb_cc(&cmd);
+    cb_cc_flags(&cmd);
+    cb_cc_output(&cmd, bin_path);
+    cb_cc_inputs(&cmd, SRC_PATH);
+    if (!cb_cmd_run(&cmd)) cb_return_defer(false);
 
-        // 增量：目标比源新就跳过。cb_needs_rebuild 收一个依赖数组，单个源就是长度 1。
-        const char* deps[] = {src};
-        int needs = cb_needs_rebuild(obj, deps, CB_ARRAY_LEN(deps));
-        if (needs < 0) cb_return_defer(false);
-        if (needs == 0) {
-            cb_log(CB_INFO, "跳过 %s（已是最新）", obj);
-            continue;
-        }
-
-        cmd.count = 0; // cb_cmd_run 默认会清空，这里显式写出来
-        cb_cmd_append(&cmd, "cc", "-Wall", "-Wextra", "-c", "-o", obj, src,
-                      cb_temp_sprintf("-I%s", SRC_DIR));
-        if (!cb_cmd_run(&cmd, .async = &procs, .max_procs = (size_t)cb_nprocs())) {
-            cb_return_defer(false);
-        }
-    }
-
-    // 2) 等所有编译结束
-    if (!cb_procs_wait_and_reset(&procs)) cb_return_defer(false);
-
-    // 3) 链接。有任何一个 .o 比可执行文件新就得重新链接。
-    needs_link = cb_needs_rebuild(APP, objects, CB_ARRAY_LEN(objects));
-    if (needs_link < 0) cb_return_defer(false);
-    if (needs_link == 0) {
-        cb_log(CB_INFO, "%s 已是最新", APP);
-    } else {
-        cmd.count = 0;
-        cb_cmd_append(&cmd, "cc", "-o", APP);
-        cb_cmd_append(&cmd, objects[0], objects[1]);
-        if (!cb_cmd_run(&cmd)) cb_return_defer(false);
-    }
-
-    cb_log(CB_INFO, "构建完成：%s", APP);
+    // 运行产物。cb.c 不带参数时默认跑测试，这里传 list 让它只列出测试名。
+    cb_cmd_append(&cmd, bin_path, "list");
+    if (!cb_cmd_run(&cmd)) cb_return_defer(false);
 
 defer:
-    cb_cmd_free(cmd);
-    cb_da_free(procs);
+    free(cmd.items);
     return result;
-}
-
-static bool clean(void)
-{
-    if (!cb_file_exists(DEMO_ROOT)) {
-        cb_log(CB_INFO, "没有需要清理的东西");
-        return true;
-    }
-    return cb_delete_directory_recursively(DEMO_ROOT);
 }
 
 int main(int argc, char** argv)
 {
-    // 自重建：本文件（或 cb.h）比可执行文件新时，自动重新编译自己再重跑。
-    // 路径相对【当前工作目录】解析，所以本示例约定在仓库根目录运行。
-    CB_SELF_REBUILD_PLUS(argc, argv, "cb.h");
+#ifdef _WIN32
+    SetConsoleOutputCP(CP_UTF8);
+#endif // _WIN32
 
+    cb_minimal_log_level = CB_INFO;
     cb_set_log_handler(cb_default_log_handler);
 
-    const char* program = cb_shift(argv, argc);
-    const char* command = argc > 0 ? cb_shift(argv, argc) : "build";
+    // 本文件（或 cb.h）比可执行文件新时，自动重新编译自己再重跑
+    CB_SELF_REBUILD_PLUS(argc, argv, "cb.h");
 
-    if (strcmp(command, "build") == 0) {
-        if (!generate_demo_project()) return 1; // 真实项目里没有这一步
-        if (!build_project()) return 1;
-        cb_log(CB_INFO, "运行一下：%s", APP);
-        CB_Cmd run = CB_ZERO;
-        cb_cmd_append(&run, APP);
-        bool ok = cb_cmd_run(&run);
-        cb_cmd_free(run);
-        return ok ? 0 : 1;
+    for (size_t i = 0; i < project_names_count; ++i) {
+        if (!build_and_run(project_names[i])) return 1;
     }
-    if (strcmp(command, "clean") == 0) return clean() ? 0 : 1;
-
-    printf("用法: %s [build|clean]\n", program);
     return 0;
 }

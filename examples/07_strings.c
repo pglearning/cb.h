@@ -96,6 +96,10 @@ static void demo_string_builder(void)
     cb_sb_append_buf(&sb, tail, sizeof(tail));
     printf("追加裸缓冲后: |" CB_SV_FMT "|\n", CB_SV_ARG(cb_sb_to_sv(sb)));
 
+    // items 永远是合法的 C 字符串：每次追加后 items[count] 都是 '\0'，
+    // count 不含这个终止符，所以可以直接当 C 字符串用，不需要自己补。
+    printf("items 直接当 C 字符串用: %s\n", sb.items);
+
     // 对齐填充：补 0 到指定边界
     size_t before = sb.count;
     cb_sb_pad_align(&sb, 8);
@@ -143,7 +147,7 @@ static void demo_numbers(void)
     int64_t n = 0;
     printf("cb_sv_to_i64(2147483647)  = %s\n", cb_sv_to_i64(CB_SVLIT("2147483647"), &n) ? "成功" : "失败");
     printf("cb_sv_to_i64(2147483648)  = %s\n", cb_sv_to_i64(CB_SVLIT("2147483648"), &n) ? "成功" : "失败");
-    printf("  -> %lld（int 装不下就用 int64，库不再单独提供 int 版本）\n", (long long)n);
+    printf("  -> %lld（int 装不下就用 int64）\n", (long long)n);
 
     double d = 0;
     printf("cb_sv_to_f64(3.5)   = %s\n", cb_sv_to_f64(CB_SVLIT("3.5"), &d) ? "成功" : "失败");

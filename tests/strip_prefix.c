@@ -5,6 +5,12 @@
 #include "test_diagnostics.h"
 #include "cb.h"
 
+// 版本号防漂移：CB_VERSION_STRING 由这三个数字拼出，改了数字就必须同步这里，
+// 否则编译直接失败（顺便提醒：升级版本时记得看一遍 docs 与 README 里有没有提到版本）。
+#if CB_VERSION_MAJOR != 1 || CB_VERSION_MINOR != 1 || CB_VERSION_PATCH != 0
+#error "CB_VERSION_* 变了：请同步这条断言"
+#endif
+
 // 下面这些名字在标准库 / 系统头里已经存在，全部保留 cb_ 前缀、别名区不处理它们
 #ifdef log
 #error "log 不该有别名：会和 libm 的 log() 冲突"

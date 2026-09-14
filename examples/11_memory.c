@@ -8,7 +8,11 @@
 //     cc -o /tmp/ex11 examples/11_memory.c && /tmp/ex11
 //     cc -DCB_ALLOC_TRACK -o /tmp/ex11 examples/11_memory.c && /tmp/ex11   # 打开追踪
 //
-// 注意 #include "cb.h" 必须是第一个 include。
+// 内存相关的编译期开关：必须定义在 #include 之前才生效（写在后面无效，命令行 -D 等价）
+#define CB_ARENA_REGION_INIT_CAPACITY (8 * 1024) // arena / temp 首块容量，默认 64KB；写小一点能看出"写满追加新块"
+// #define CB_ALLOC_TRACK              // 每次分配带追踪头，可统计与报告泄漏（./cb examples 用 -DCB_ALLOC_TRACK 编本示例）
+// #define CB_DA_INIT_CAP 64           // 动态数组首次扩容的容量，默认 256（示例 14 把它改成 4 实测过）
+// #define CB_MAP_INIT_CAPACITY 4      // HashMap 初始桶数，默认 16（示例 14 把它改成 4 实测过）
 
 #include "../cb.h"
 
@@ -26,8 +30,8 @@ static void demo_arena(void)
     char* s = cb_arena_sprintf(&arena, "value=%d", 42);
     int* xs = (int*)cb_arena_alloc(&arena, 10 * sizeof(int));
     for (int i = 0; i < 10; ++i) xs[i] = i * i;
-    printf("  分配后：begin=%s，字符串=\"%s\"，xs[9]=%d\n",
-           arena.begin != NULL ? "非空" : "NULL", s, xs[9]);
+    printf("  分配后：begin=%s，首块容量=%zu 字节（来自 CB_ARENA_REGION_INIT_CAPACITY），字符串=\"%s\"，xs[9]=%d\n",
+           arena.begin != NULL ? "非空" : "NULL", arena.begin->capacity, s, xs[9]);
 
     // 高对齐分配
     void* aligned = cb_arena_alloc_aligned(&arena, 64, 64);

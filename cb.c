@@ -193,14 +193,14 @@ defer:
 
 typedef struct {
     const char* name;
-    const char* arg; // 可为 NULL；构建类示例跑它们的 build 子命令
+    const char* arg; // 传给示例的额外参数，可为 NULL
 } Example;
 
 const Example examples[] = {
     {"01_hello", NULL},
-    {"02_single_project", "build"},
-    {"03_multi_project", "build"},
-    {"04_two_stage", "build"},
+    {"02_single_project", NULL},
+    {"03_multi_project", NULL},
+    {"04_two_stage", NULL},
     {"05_build_api", NULL},
     {"06_containers", NULL},
     {"07_strings", NULL},
@@ -210,6 +210,7 @@ const Example examples[] = {
     {"11_memory", NULL},
     {"12_logging", NULL},
     {"13_toolbox", NULL},
+    {"14_config_switches", NULL},
 };
 #define examples_count CB_ARRAY_LEN(examples)
 

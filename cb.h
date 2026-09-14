@@ -12,14 +12,36 @@
 //      - 语言基线 C11；裸 clang/gcc 直接编译即可，无需任何额外 -D 参数
 //      - 版本：CB_VERSION_MAJOR / CB_VERSION_MINOR / CB_VERSION_PATCH / CB_VERSION_STRING
 //
-//  可选的编译期开关（默认全部关闭，在 #include "cb.h" 之前定义）：
-//      CB_ENABLE_ECHO                  文件系统/命令等操作打印提示信息
-//      CB_DONT_DELETE_OLD_CB           保留上一次编译出的旧二进制
-//      CB_TRACE_CMD_RUN_FAIL_LOCATION  命令失败时打印其调用点
-//      CB_ALLOC_TRACK                  每次分配带内部追踪头，可统计与报告泄漏
-//      CB_STRIP_PREFIX                 生成去 cb_ 前缀的别名（别名区在文件末尾，由 tools/gen-docs.py 生成）
-//      CB_SHARED_STATE[_IMPL]          多 TU 共享全局状态（见 General 一节）
-//      CB_OOM(size)                    顶掉默认的 OOM 处理器（见"内存分配收口"一节）
+//  可选的编译期开关（共 17 个；在 #include "cb.h" 之前定义才生效，不定义就用下面的默认值）：
+//
+//    行为开关（7 个，默认全关）：
+//      CB_ENABLE_ECHO                  文件系统/命令等操作打印提示信息（默认关）
+//      CB_DONT_DELETE_OLD_CB           保留上一次编译出的旧二进制（默认关：旧的会被删掉）
+//      CB_TRACE_CMD_RUN_FAIL_LOCATION  命令失败时打印其调用点 文件:行号（默认关）
+//      CB_ALLOC_TRACK                  每次分配带内部追踪头，可统计与报告泄漏（默认关）
+//      CB_STRIP_PREFIX                 生成去 cb_ 前缀的别名（默认关；别名区在文件末尾，由 tools/gen-docs.py 生成）
+//      CB_SHARED_STATE[_IMPL]          多 TU 共享全局状态（默认关：每个 TU 各一份，见 General 一节）
+//      CB_OOM(size)                    顶掉默认的 OOM 处理器（默认打印后 abort，见"内存分配收口"一节）
+//
+//    容量 / 参数微调（9 个，默认值如下）：
+//      CB_PATH_MAX                     路径缓冲上限，默认 PATH_MAX（系统没定义它时 4096）
+//      CB_TIMER_MAX_DEPTH              计时器嵌套深度上限，默认 64（统计表本身按需增长）
+//      CB_ARENA_REGION_INIT_CAPACITY   arena / temp 首块容量，默认 64KB（写满自动追加新块，不是总量上限）
+//      CB_ARENA_ALIGN                  arena 分配对齐，默认 alignof(max_align_t)
+//      CB_THREAD_LOCAL                 线程局部存储说明符，默认 C 下 _Thread_local、C++ 下 thread_local
+//                                      （单线程程序定义成空可以省掉 TLS 访问开销）
+//      CB_DA_INIT_CAP                  动态数组首次扩容的容量，默认 256
+//      CB_BITSET_WORD_BITS             位图一个字多少位，默认 64（内部按 uint64_t 字存储）
+//      CB_MAP_INIT_CAPACITY            HashMap 初始桶数，默认 16（到负载上限后按 2 倍增长）
+//      CB_WIN32_ERR_MSG_SIZE           Windows 错误信息缓冲大小，默认 4KB（非 Windows 平台无效果）
+//
+//    还有一个（1 个）：
+//      CB_WARN_DEPRECATED              让 CB_DEPRECATED 真的展开成编译器的 deprecated 属性（默认关：标了也不报警告）
+//
+//    以上每一个都在 cb.h 里有 #ifndef 守卫，在 #include 之前定义即可覆盖。
+//    另有几个开关写在各自的小节里：CB_REALLOC / CB_FREE / CB_REALLOC_RAW / CB_FREE_RAW（内存分配收口）、
+//    CB_TEMP_CAPACITY（Arena / Temp Storage）、CB_ASSERT / CB_PANIC_BACKTRACE（Logger / Panic）。
+//    逐个开关的示例见 examples/14_config_switches.c，总览表见 examples/README.md。
 //
 //  设计取舍（不是 bug；遇到了按这里说的做）：
 //      1. arena 不支持单独释放，只支持整体复位/整体回收：cb_arena_reset 把游标归零、内存留给下次
@@ -84,7 +106,7 @@
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // 语义化版本。数字是唯一真源，版本字符串由数字拼出来（改一处即可）。
 #define CB_VERSION_MAJOR 1
-#define CB_VERSION_MINOR 0
+#define CB_VERSION_MINOR 1
 #define CB_VERSION_PATCH 0
 
 #define CB__STRINGIFY_(x) #x
@@ -805,7 +827,9 @@ CBDEF void cb_timer_reset(void)
 #endif // !CB_TEMP_CAPACITY
 
 // 对齐粒度用 max_align_t，足以承载任何标准类型
+#ifndef CB_ARENA_ALIGN
 #define CB_ARENA_ALIGN (alignof(max_align_t))
+#endif // !CB_ARENA_ALIGN
 
 // 线程局部：每个线程一套独立的 temp 栈，多线程下不会互相踩。
 // 单线程程序可 #define CB_THREAD_LOCAL 为空以省掉 TLS 访问开销。
@@ -1257,7 +1281,9 @@ typedef struct {
     size_t bits;
 } CB_Bitset;
 
+#ifndef CB_BITSET_WORD_BITS
 #define CB_BITSET_WORD_BITS 64
+#endif // !CB_BITSET_WORD_BITS
 
 // ---- 声明 ----
 // 把位数调整为 bits（变大时新增位为 0，变小时直接丢弃高位）
@@ -5593,10 +5619,10 @@ CBDEF void cb__self_rebuild(int argc, char** argv, const char* source_path, ...)
 #if defined(_MSC_VER)
 #define cb_cc_flags(cmd) cb_cmd_append(cmd, "/TC", "/W4", "/nologo", "/D_CRT_SECURE_NO_WARNINGS", "-I.")
 #elif defined(__APPLE__) || defined(__MACH__)
-// TODO: "-std=c99" / "-D_POSIX_C_SOURCE=200112L" 在 macOS 上不生效，原因不明
+// "-std=c11" / "-D_POSIX_C_SOURCE=200809L" 在 macOS 上会藏掉需要的符号（原因不明）
 #define cb_cc_flags(cmd) cb_cmd_append(cmd, "-Wall", "-Wextra", "-Wswitch-enum", "-I.")
 #elif defined(__FreeBSD__)
-// "-D_POSIX_C_SOURCE=200112L" 在 FreeBSD 上会藏掉需要的符号
+// "-D_POSIX_C_SOURCE=200809L" 在 FreeBSD 上会藏掉需要的符号
 #define cb_cc_flags(cmd) cb_cmd_append(cmd, "-Wall", "-Wextra", "-Wswitch-enum", "-std=c11", "-ggdb", "-I.");
 #else
 #define cb_cc_flags(cmd) cb_cmd_append(cmd, "-Wall", "-Wextra", "-Wswitch-enum", "-std=c11", "-D_POSIX_C_SOURCE=200809L", "-ggdb", "-I.");

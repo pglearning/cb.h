@@ -58,13 +58,13 @@ $ ./build
 | **[docs/guide.md](docs/guide.md)** | 分模块使用指南：每节讲"怎么用"，含大量可抄的代码片段 |
 | **[docs/api.md](docs/api.md)** | API 速查表：346 个公共接口（201 函数 + 105 宏 + 40 类型），按分节列出 |
 | **[docs/api-coverage.md](docs/api-coverage.md)** | 覆盖对照表：每个接口在哪个示例/测试里被真正用到（当前无使用者的接口数 = 0） |
-| **[examples/](examples/)** | 13 个可直接编译运行的示例，覆盖全部功能 |
+| **[examples/](examples/)** | 14 个可直接编译运行的示例，覆盖全部功能 |
 | **[bench/](bench/)** | 性能基准，覆盖 8 个模块 |
 
 ## 示例
 
 ```console
-$ ./cb examples      # 编译并运行全部 13 个示例
+$ ./cb examples      # 编译并运行全部 14 个示例
 ```
 
 **构建类**（cb.h 的主用途）：
@@ -72,16 +72,19 @@ $ ./cb examples      # 编译并运行全部 13 个示例
 | 示例 | 内容 |
 |---|---|
 | [`01_hello.c`](examples/01_hello.c) | 最小可用：include + 日志 |
-| [`02_single_project.c`](examples/02_single_project.c) | **单项目构建**：自重建、并行编译、增量跳过、链接、运行 |
-| [`03_multi_project.c`](examples/03_multi_project.c) | **多项目构建**：项目表 + 依赖顺序 + 静态库 + 遍历目录发现子项目 |
-| [`04_two_stage.c`](examples/04_two_stage.c) | **两阶段构建**：先生成 `config.h` 再按配置构建，改配置即触发重编 |
+| [`02_single_project.c`](examples/02_single_project.c) | **单项目构建**：编译一个真实源文件再运行它，就是 `cb.c` 里 `build_and_run` 的骨架 |
+| [`03_multi_project.c`](examples/03_multi_project.c) | **多项目构建**：项目表驱动多个目标，源文件 / 产物名 / 运行参数都在表里 |
+| [`04_two_stage.c`](examples/04_two_stage.c) | **两阶段构建**：先生成 `config.h` 再按配置构建，改配置重跑即生效 |
 | [`05_build_api.c`](examples/05_build_api.c) | **构建 API 全量**：Cmd / FD / Pipe / Proc / Procs / Chain 的每个函数与选项 |
 
 **标准库类**：`06_containers`（容器与算法）、`07_strings`（字符串）、`08_utf8`、
 `09_paths`（路径与 glob）、`10_filesystem`、`11_memory`、`12_logging`、`13_toolbox`。
 
-构建类示例都是自包含的：会在 `build/examples/<名字>/` 下先造一个演示项目再构建它，
-真实项目里把造项目那几步删掉即可。详见 [examples/README.md](examples/README.md)。
+**编译期开关**：[`14_config_switches`](examples/14_config_switches.c) —— `CB_STRIP_PREFIX`
+（去前缀别名，以及 11 个刻意不生成别名的名字）与 `CB_OOM`（把分配失败从 abort 换成自己的处理器）。
+
+02/03 构建的是仓库里真实存在的源文件，04 会先生成 `config.h`；产物都放在
+`build/examples/<名字>/` 下，它们的 `main` 与 `cb.c` 是同一个骨架。详见 [examples/README.md](examples/README.md)。
 
 ## 构建与测试
 
@@ -120,7 +123,7 @@ $ ./cb test
 | 平台 | 状态 |
 |---|---|
 | Linux + clang / gcc | ✅ C（gnu11 / gnu17 / gnu23 / c11）× C++（c++17 / c++20 / c++23），0 错误 0 警告 |
-| ASan + UBSan + LSan | ✅ 15 个测试与 13 个示例全部干净 |
+| ASan + UBSan + LSan | ✅ 15 个测试与 14 个示例全部干净 |
 | Windows（mingw-w64 + wine） | ✅ 交叉编译 0 警告，15 个测试全部通过 |
 | macOS / FreeBSD / Haiku / MSVC | ⚠️ 保留了条件编译分支，未实测 |
 
