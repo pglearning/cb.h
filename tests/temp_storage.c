@@ -2,6 +2,7 @@
 //
 // 风格：纯 printf + golden 比对。
 // temp 存储是 _Thread_local，活到进程结束、故意不释放（设计如此，不是泄漏），所以这里不写 free。
+#include "test_diagnostics.h"
 #include "cb.h"
 
 int main(void)

@@ -1,6 +1,7 @@
 // String_Builder 实测：追加 / 对齐 / 自引用 / 读文件往返
 //
 // 风格：纯 printf + golden 比对，只打实际观察到的值。
+#include "test_diagnostics.h"
 #include "cb.h"
 
 int main(void)

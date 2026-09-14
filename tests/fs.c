@@ -1,5 +1,6 @@
 // File System 扩展实测：元信息 / mkdir -p / 原子写 / 符号链接 / glob / mmap
 // 工作目录是 build/tests/fs.cwd（构建脚本每次运行前清空重建）
+#include "test_diagnostics.h"
 #include "cb.h"
 
 #ifdef _WIN32
@@ -117,17 +118,18 @@ static void test_symlink(void)
 {
     printf("\n== 符号链接 ==\n");
 
-    printf("创建目标文件 target.txt -> %d\n", (int)cb_write_entire_file("target.txt", "target-data", 11));
-
 #ifdef _WIN32
-    // Windows 创建符号链接需要权限；创建失败就跳过读取部分
-    if (!cb_create_symlink("target.txt", "link.txt")) {
-        printf("Windows 上创建符号链接失败（缺少权限），跳过\n");
-        return;
-    }
-#else
+    // Windows 下建符号链接要开发者模式或管理员权限，而且不同环境的行为还不一致：
+    // CI 的 wine 里 CreateSymbolicLink 会"报成功"但链接其实不可用（lstat 看不到它、
+    // readlink 读不出来），同一份 golden 于是有的机器过、有的机器挂。
+    // Linux 下建链接是普通操作，完整覆盖保留在下面；Windows 下整段跳过，输出在任何
+    // Windows 环境（真机 / 各种 wine 配置 / 有没有权限）下都逐字节一致。
+    printf("Windows 下跳过符号链接用例（建链接需要开发者模式或管理员权限）\n");
+    return;
+#endif // _WIN32
+
+    printf("创建目标文件 target.txt -> %d\n", (int)cb_write_entire_file("target.txt", "target-data", 11));
     printf("创建符号链接 link.txt -> %d\n", (int)cb_create_symlink("target.txt", "link.txt"));
-#endif
 
     int link_type = cb_get_file_type("link.txt");
     printf("识别出符号链接 -> %d\n", (int)(link_type == CB_FILE_SYMLINK));

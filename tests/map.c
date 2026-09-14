@@ -1,5 +1,6 @@
 // HashMap（字符串键 + uint64 键）的实测
 // 覆盖：插入/覆盖/查找/删除/墓碑复用/扩容/遍历/预分配/arena 后端/大数据量
+#include "test_diagnostics.h"
 #include "cb.h"
 
 static void test_map_basic(void)

@@ -1,4 +1,5 @@
 // arena / temp 实测：对齐、跨 region 完整性、快照回滚、reset 复用、free；输出确定性，可作 golden 基线
+#include "test_diagnostics.h"
 #include "cb.h"
 
 int main(void)

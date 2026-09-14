@@ -1,5 +1,6 @@
 // nob.h 对齐项实测：CB_SVLIT / cb_cmd_extend / cb_cmd_free /
 //   cb_nanos_since_unspecified_epoch / cb_needs_rebuild / cb_procs_wait_and_reset
+#include "test_diagnostics.h"
 #include "cb.h"
 
 static void test_svlit(void)

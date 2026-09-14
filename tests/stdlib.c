@@ -1,6 +1,7 @@
 // 实测：DA 补充操作 / 位图 / 环形缓冲 / 排序 / 字符串工具 / 数字解析 / split-join / utf8 / 路径处理
 // 输出确定性（不打印地址与耗时），可直接作为 golden 基线
 // 风格：纯 printf + golden 比对，只打实际观察到的值；通过/失败由 cb test 与 tests/stdlib.stdout.txt 比对决定。
+#include "test_diagnostics.h"
 #include "cb.h"
 
 // 路径分隔符是平台相关的：Windows 输出 '\'，其它平台输出 '/'

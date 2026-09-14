@@ -1,6 +1,7 @@
 // String_View 实测：chop 系列 / trim / find / 前后缀 / 空视图回归
 //
 // 风格：纯 printf + golden 比对，测试只把实际观察到的值打出来。
+#include "test_diagnostics.h"
 #include "cb.h"
 
 int main(void)

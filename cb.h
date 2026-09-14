@@ -1626,10 +1626,12 @@ typedef struct {
 
 // printf 打印 StringView 用的宏
 #ifndef CB_SV_FMT
-// 编译期构造 String_View 字面量，比 cb_sv_from_cstr("...") 少一次 strlen
-#define CB_SVLIT(lit) (CB_CLIT(CB_String_View){.count = sizeof(lit) - 1, .data = (lit)})
+// 编译期构造 String_View 字面量，比 cb_sv_from_cstr("...") 少一次 strlen。
+// designator 必须按 CB_String_View 的声明顺序（data 在前、count 在后）：C 允许乱序，
+// C++ 是硬错误 "designator order for field does not match declaration order"。
+#define CB_SVLIT(lit) (CB_CLIT(CB_String_View){.data = (lit), .count = sizeof(lit) - 1})
 // 静态初始化版本（MSVC 的 /TC 模式不接受上面那种复合字面量写法时用它）
-#define CB_SVLIT_STATIC(lit) {.count = sizeof(lit) - 1, .data = (lit)}
+#define CB_SVLIT_STATIC(lit) {.data = (lit), .count = sizeof(lit) - 1}
 
 #define CB_SV_FMT "%.*s"
 #endif // CB_SV_FMT
@@ -5595,9 +5597,9 @@ CBDEF void cb__self_rebuild(int argc, char** argv, const char* source_path, ...)
 #define cb_cc_flags(cmd) cb_cmd_append(cmd, "-Wall", "-Wextra", "-Wswitch-enum", "-I.")
 #elif defined(__FreeBSD__)
 // "-D_POSIX_C_SOURCE=200112L" 在 FreeBSD 上会藏掉需要的符号
-#define cb_cc_flags(cmd) cb_cmd_append(cmd, "-Wall", "-Wextra", "-Wswitch-enum", "-std=c99", "-ggdb", "-I.");
+#define cb_cc_flags(cmd) cb_cmd_append(cmd, "-Wall", "-Wextra", "-Wswitch-enum", "-std=c11", "-ggdb", "-I.");
 #else
-#define cb_cc_flags(cmd) cb_cmd_append(cmd, "-Wall", "-Wextra", "-Wswitch-enum", "-std=c99", "-D_POSIX_C_SOURCE=200112L", "-ggdb", "-I.");
+#define cb_cc_flags(cmd) cb_cmd_append(cmd, "-Wall", "-Wextra", "-Wswitch-enum", "-std=c11", "-D_POSIX_C_SOURCE=200809L", "-ggdb", "-I.");
 #endif
 #endif // __cplusplus
 #endif // !cb_cc_flags

@@ -2,6 +2,7 @@
 //
 // 风格：纯 printf + golden 比对，只打实际观察到的值。
 // stdout 必须确定性：任何耗时/计时数据都不能进 stdout（cb_dump_hex 自己走 stderr，正好符合这条）。
+#include "test_diagnostics.h"
 #include "cb.h"
 
 static void test_math(void)

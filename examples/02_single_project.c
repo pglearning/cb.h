@@ -58,6 +58,9 @@ static bool build_project(void)
     bool result = true;
     CB_Cmd cmd = CB_ZERO;
     CB_Procs procs = CB_ZERO;
+    // C++ 下 cb_return_defer（内部是 goto defer）要求所有变量声明写在第一个 goto 之前，
+    // 所以 needs_link 在这里先声明、后面再赋值。
+    int needs_link = 0;
 
     static const char* sources[] = {"main.c", "greet.c"};
     static const char* objects[] = {OUT_DIR "main.o", OUT_DIR "greet.o"};
@@ -90,7 +93,7 @@ static bool build_project(void)
     if (!cb_procs_wait_and_reset(&procs)) cb_return_defer(false);
 
     // 3) 链接。有任何一个 .o 比可执行文件新就得重新链接。
-    int needs_link = cb_needs_rebuild(APP, objects, CB_ARRAY_LEN(objects));
+    needs_link = cb_needs_rebuild(APP, objects, CB_ARRAY_LEN(objects));
     if (needs_link < 0) cb_return_defer(false);
     if (needs_link == 0) {
         cb_log(CB_INFO, "%s 已是最新", APP);

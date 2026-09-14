@@ -630,6 +630,26 @@ $ ./cb help        # 或 -h / --help
 跨平台差异用 `tests/<名字>.win32.stdout.txt` 覆盖：`tools/verify-windows.sh` 优先用它，
 没有就和 Linux 用同一份 golden——后者是更强的断言，它证明该功能在两个平台上输出一致。
 
+### 在 C++ 模式下跑测试
+
+```console
+$ tools/verify-cxx-tests.sh            # clang++/g++ × c++17/c++20 各构建一次 cb、各跑一遍全部测试
+$ tools/verify-cxx-tests.sh --quick    # 只跑 g++ -std=c++17
+```
+
+`cb.c` 用 C++ 编译器构建时（CI 的 `linux` 任务就是这么做的：`$cc -x c++ -o cb cb.c`），
+它给自己那套编译选项里带 `-x c++`，于是 `./cb test` 会把**全部 15 个测试当 C++ 编译**。
+本地只跑 C 模式时这条路径看不见，它抓到的问题都是 C 下永远不报的：
+
+| 问题 | 为什么 C 下不报 |
+|---|---|
+| 指定初始化器的 designator 顺序（`CB_SVLIT` 就踩过） | C 允许乱序；C++ 要求与结构体声明顺序一致，是硬错误 |
+| `{0}` 初始化多成员结构体 | C 不告警；C++ 的 `-Wmissing-field-initializers` 会逐个成员报 |
+| 取复合字面量的地址（`&(CB_Args)CB_ZERO`、`(char[4]){0}`） | C 下复合字面量是对象；C++ 下是右值/临时数组 |
+
+所以每个 `tests/*.c` 都包含 `tests/test_diagnostics.h`——它按编译器分支压掉上面那两个
+`-Wmissing-field-initializers` 系的告警，写法和 `cb.c` 顶部完全一致。CI 里对应 `cxx-tests` 任务。
+
 ### 在 Linux 上验证 Windows 分支
 
 ```console

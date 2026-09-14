@@ -1,4 +1,5 @@
 // Cmd Chain 实测：真正跑管道并校验数据流
+#include "test_diagnostics.h"
 #include "cb.h"
 
 static void test_chain_pipeline(void)

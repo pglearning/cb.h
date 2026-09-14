@@ -125,4 +125,5 @@ $ ./cb test
 ```console
 $ tools/verify-sanitizers.sh            # 全部测试在 ASan+UBSan+LSan 下跑（--examples 连示例一起扫）
 $ tools/verify-windows.sh               # mingw-w64 交叉编译 + wine 实跑，逐字节比对 golden
+$ tools/verify-cxx-tests.sh             # clang++/g++ × c++17/c++20 构建 cb 并跑全部测试（要求 0 告警）
 ```

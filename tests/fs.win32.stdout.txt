@@ -34,14 +34,7 @@ cb_get_file_type(".") == CB_FILE_DIRECTORY -> 1
 原子写留下的 .tmp 垃圾文件个数 = 0
 
 == 符号链接 ==
-创建目标文件 target.txt -> 1
-识别出符号链接 -> 1
-普通文件不是链接 -> 1
-不跟随链接（lstat 语义）-> 1
-cb_read_symlink(link.txt) = target.txt
-通过链接读文件 -> 1
-读到的内容 = |target-data|（11 字节）
-对非链接调用 read_symlink 返回 NULL -> 1
+Windows 下跳过符号链接用例（建链接需要开发者模式或管理员权限）
 
 == glob 匹配（纯函数）==
 cb_glob_match("*.c", "main.c") = 1

@@ -11,11 +11,23 @@
 // #define CB_TRACE_CMD_RUN_FAIL_LOCATION
 // C++ 下用 {0} 初始化多成员结构体会触发 -Wmissing-field-initializers /
 // -Wmissing-designated-field-initializers（后者只有 clang 有），这两个告警没有信息量，就地关掉。
-// 必须按编译器分支：gcc 会用 -Wunknown-pragmas 抱怨 `#pragma clang diagnostic`，反过来也一样。
+//
+// 三层守卫，缺一不可（任何一层漏掉都会变成"本地干净、CI 报警"）：
+//   1. #ifdef __cplusplus —— C 下 {0} 本来就不触发这个告警；
+//   2. 按编译器分支 —— gcc 见到 `#pragma clang diagnostic` 会报 -Wunknown-pragmas
+//      （-Wall 里带着它），clang 见到 `#pragma GCC diagnostic` 也一样；
+//   3. __has_warning 探测 —— "-Wmissing-designated-field-initializers" 是较新 clang 才有的
+//      warning group，老 clang 不认识它，直接写反而会报
+//      "unknown warning group '-Wmissing-designated-field-initializers', ignored"。
+//      gcc 那边 "-Wmissing-field-initializers" 从 4.x 就有，不需要探测。
 #ifdef __cplusplus
 #if defined(__clang__)
 #pragma clang diagnostic ignored "-Wmissing-field-initializers"
+#if defined(__has_warning)
+#if __has_warning("-Wmissing-designated-field-initializers")
 #pragma clang diagnostic ignored "-Wmissing-designated-field-initializers"
+#endif // __has_warning("-Wmissing-designated-field-initializers")
+#endif // defined(__has_warning)
 #elif defined(__GNUC__)
 #pragma GCC diagnostic ignored "-Wmissing-field-initializers"
 #endif // __clang__ / __GNUC__

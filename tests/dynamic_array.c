@@ -1,3 +1,4 @@
+#include "test_diagnostics.h"
 #include "cb.h"
 
 int main(void)
