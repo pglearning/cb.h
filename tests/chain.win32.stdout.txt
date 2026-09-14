@@ -1,0 +1,1 @@
+chain 的行为用例需要 POSIX 工具（sh/tr/cat/sort），Windows 下跳过

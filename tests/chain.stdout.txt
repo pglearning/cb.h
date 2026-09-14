@@ -1,0 +1,46 @@
+
+== 三层管道：echo | tr | cat ==
+chain_begin -> 1
+chain_cmd #1 (echo) -> 1
+chain_cmd 之后 cmd.count = 0（默认会重置 cmd）
+chain_cmd #2 (tr) -> 1
+chain_cmd #3 (cat) -> 1
+chain_end 重定向到文件 -> 1
+读回 out.txt -> 1
+out.txt 内容（12 字节）= |HELLO-CHAIN
+|
+
+== 从文件进、经两层管道、到文件出 ==
+写 in.txt -> 1
+chain_begin 指定 stdin_path -> 1
+chain_cmd #1 -> 1
+chain_cmd #2 -> 1
+chain_end -> 1
+读回 out2.txt -> 1
+out2.txt 内容（17 字节）= |ALPHA
+BETA
+GAMMA
+|
+
+== err2out：stderr 并入 stdout ==
+chain_begin -> 1
+chain_cmd 带 err2out -> 1
+chain_cmd #2 -> 1
+chain_end 同时给 stdout 与 stderr 路径 -> 1
+读回 out3.txt -> 1
+out3.txt 内容（8 字节）= |OUT
+ERR
+|
+含 OUT = 1, 含 ERR = 1（期望 OUT 与 ERR 一起出现在 stdout 文件里）
+cb_file_exists(err3.txt) = 1
+cb_file_size(err3.txt) = 0
+
+== dont_reset：保留 cmd 以便复用 ==
+chain_begin -> 1
+chain_cmd 带 dont_reset -> 1
+dont_reset 时 cmd.count = 2
+cb_chain_cmd 复用同一个 cmd -> 1
+chain_end -> 1
+读回 out4.txt -> 1
+out4.txt 内容（8 字节）= |keep-me
+|

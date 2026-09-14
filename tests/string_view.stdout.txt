@@ -1,0 +1,27 @@
+|Hello |
+|  |
+|lo |
+|He|
+|o |
+||
+| |
+|o|
+||
+| |
+has_suffix = 0
+has_suffix = 0
+has_prefix = 0
+has_prefix = 0
+||
+has_prefix = 0
+||
+has_suffix = 0
+|   d1dd   |
+|d1dd|
+|find index = 4|
+|   d1dd   |
+|d1dd|
+两个 NULL 空视图相等 = 1
+NULL 空视图 vs "" = 1
+空视图 vs 非空 = 0
+ends_with 空后缀 = 1

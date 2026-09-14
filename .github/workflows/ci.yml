@@ -1,0 +1,90 @@
+name: ci
+
+on: [push, pull_request]
+
+jobs:
+  linux:
+    strategy:
+      matrix:
+        # 对齐上游 nob.h 的 CI 做法：C 与 C++ 两种语言模式，两个编译器都跑
+        cc: [clang, gcc]
+        lang: [c, c++]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 构建构建脚本（${{ matrix.cc }} -x ${{ matrix.lang }}）
+        run: ${{ matrix.cc }} -x ${{ matrix.lang }} -o cb cb.c
+
+      - name: 跑测试（含双编译器 C++ 兼容性检查）
+        run: ./cb test
+
+  strict-warnings:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 严格警告矩阵（要求 0 错误 0 警告）
+        run: |
+          set -e
+          for spec in "clang -std=gnu11" "clang -std=gnu17" "clang -std=gnu23" \
+                      "gcc -std=gnu11" "clang -std=c11 -D_POSIX_C_SOURCE=200809L"; do
+            echo "== $spec =="
+            out=$($spec -Wall -Wextra -I. -fsyntax-only cb.c 2>&1) || true
+            echo "$out"
+            if echo "$out" | grep -q 'error:\|warning:'; then
+              echo "FAILED: $spec 产生了错误或警告"
+              exit 1
+            fi
+          done
+
+      - name: 开启 CB_STRIP_PREFIX 后仍要 0 警告
+        run: |
+          printf '#define CB_STRIP_PREFIX\n#include "cb.h"\nint main(void){return 0;}\n' > /tmp/sp.c
+          clang -std=gnu11 -Wall -Wextra -Werror -I. -c /tmp/sp.c -o /tmp/sp.o
+          gcc   -std=gnu11 -Wall -Wextra -Werror -I. -c /tmp/sp.c -o /tmp/sp2.o
+          echo "clang/gcc: 0 警告"
+
+  windows-cross:
+    # 在 Linux 上用 mingw-w64 交叉编译，再用 wine 真正运行全部测试。
+    # 这能抓到"只编译不运行"发现不了的问题：Windows 分支此前从未被编译过，
+    # 一编就暴露出 shellapi.h 顺序错误、未定义的函数、拼写错误等一堆问题。
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 mingw-w64 与 wine
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mingw-w64 wine64
+
+      - name: Windows 交叉编译验证
+        run: tools/verify-windows.sh
+
+      - name: CB_STRIP_PREFIX 别名区不得与系统头撞名
+        # mingw 的 <wingdi.h> 定义了 ERROR，别名区必须用 #ifndef 让系统定义优先。
+        # 这里用 -Werror 把"宏重定义"变成硬失败。
+        run: |
+          printf '#define CB_STRIP_PREFIX\n#include "cb.h"\nint main(void){return 0;}\n' > /tmp/sp.c
+          x86_64-w64-mingw32-gcc -std=gnu11 -Wall -Wextra -Werror -I. -c /tmp/sp.c -o /tmp/sp.o
+          echo "mingw: 0 警告"
+
+  sanitizers:
+    # "测试全绿"和"内存干净"是两条独立的证据。这个任务第一次跑就抓到了
+    # cb_da_append_many 对 NULL 调 memmove 的 UB，以及 cb_read_entire_file
+    # 忘了给 '\0' 留位置导致的越界读——两者在普通构建下都看不出来。
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: ASan + UBSan + LeakSanitizer
+        run: tools/verify-sanitizers.sh
+
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 校验文档与 cb.h 同步
+        # 两个作用：文档没有手改导致的漂移；没有任何公共接口是"没人用过"的
+        run: python3 tools/gen-docs.py --check

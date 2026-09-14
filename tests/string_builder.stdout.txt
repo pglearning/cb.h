@@ -1,0 +1,9 @@
+read back: 写回往返一致 = 1, 读到 19 字节
+Add characters count = 7
+|addtionaddtionaddtionaddtion+svsb.items |
+read_entire_file 返回 = 1
+count = 10, strlen = 10
+结尾有 '\0' = 1
+strstr 能找到 "567" = 1
+空文件: 返回 = 1, count = 0, 可当空串 = 1
+after free: items is null = 1

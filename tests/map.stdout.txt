@@ -1,0 +1,55 @@
+
+== CB_Map 基本操作 ==
+空 map：count = 0，查 nope -> 0
+插入两条后 count = 2
+get answer -> 1，值 = 42
+get pi -> 1，值 = 314
+get 不存在的键 e -> 0
+has(pi) -> 1
+同键覆盖后 count = 2，get answer -> 1，值 = 7
+键被复制（原串已改）后 get tempkey -> 1，值 = 1
+空串作为键：get "" -> 1，值 = 9
+含 NUL 的键：get("a\0b", 3) -> 1，值 = 5
+前缀不同的键不相等（has("a")）-> 0
+值为 NULL 也能查到存在（has(nullval)）-> 1
+free 清空句柄 slots==NULL/capacity==0/count==0 = 1/1/1
+
+== CB_Map 删除与墓碑 ==
+插入 200 条后 count = 200
+删除一半全部成功 = 1，删除后 count = 100
+删除后存活项中该删没删/值不对的条数 = 0
+复用墓碑重新插满后 count = 200
+重新插入后值不对的条数 = 0
+删不存在的键 -> 0
+clear 后 count = 0，capacity = 512（保留容量）
+clear 后查不到 keys[1] -> 0
+
+== CB_Map 遍历与预分配 ==
+init_capacity(1000) 后 capacity = 2048（>= 1000*4/3 = 1）
+插入 500 条后 capacity = 2048（与预分配相同 = 1）
+遍历访问到 500 条，值总和 = 124750
+遍历空 map 访问到 0 条
+
+== CB_Map 扩容 ==
+插入 5000 条后 count = 5000，capacity = 8192（>= 5000*4/3 = 1）
+扩容后查不到/值不对的条数 = 0
+
+== CB_Map arena 后端 ==
+arena 后端插入 200 条后 count = 200
+内存确实来自 arena（arena.begin != NULL）= 1
+arena 后端 get a77 -> 1，值 = 77
+free 摘掉 arena 句柄 slots==NULL/arena==NULL = 1/1
+
+== CB_Map_U64 ==
+插入 3 条（含 0 与 UINT64_MAX）后 count = 3
+get(0) -> 1，值 = 100
+get(UINT64_MAX) -> 1，值 = 200
+get(大整数) -> 1，值 = 300
+get 不存在的键 1 -> 0
+同键覆盖后 count = 3，get(0) -> 1，值 = 999
+删除 key 0 -> 1，删后 has(0) -> 0
+顺序键插入 1000 条后 count = 1000
+顺序键查不到/值不对的条数 = 0
+splitmix64 打散后 capacity = 2048（<= 4096 = 1）
+u64 map 遍历到 1000 条
+u64 map free 后 slots == NULL = 1

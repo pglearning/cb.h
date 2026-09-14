@@ -1,0 +1,129 @@
+
+== Dynamic Array ==
+insert(1,"c") -> count = 3, items[1] = c
+insert(0,"a") -> count = 4, items[0] = a
+remove_ordered(1) -> count = 3, items[1] = c
+foreach_rev -> dca
+clear -> count = 0, items != NULL = 1
+空数组 foreach_rev 访问次数 = 0
+
+== Bitset ==
+resize(100) -> bits = 100
+set 3/64/99 -> test(3) = 1, test(64) = 1, test(99) = 1
+未置位 test(4) = 0
+unset(64) -> test(64) = 0
+toggle(4) -> test(4) = 1
+再 toggle(4) -> test(4) = 0
+count(true) = 2
+find(false) = 0
+find(true) = 3
+clear_all -> count(true) = 0
+resize(500) -> test(5) = 1, test(499) = 0
+free -> words == NULL = 1, bits = 0
+
+== Ring Buffer ==
+init(8) = 1
+初始 space = 8
+write("abcdef", 6) = 6
+peek(3) = 3, buf = abc
+peek 之后可读 = 6
+read(4) = 4, buf = abcd
+读出后可读 = 2
+绕回 write("123456", 6) = 6
+满时 write("X", 1) = 0
+read(8) = 8
+跨绕回点数据 = ef123456
+空时 read(4) = 0
+clear -> count = 0, read_pos = 0
+free -> data == NULL = 1, capacity = 0
+
+== Sort ==
+da_sort 升序 = 1 3 3 5 7 9
+da_sort_insertion 稳定 -> order = 1 3 0 2 4
+空数组排序后 count = 0
+
+== 大小写 / 忽略大小写比较 ==
+to_temp_upper("aBc1") = ABC1
+to_temp_lower("aBc1") = abc1
+eq_ignore_case("Hello", "hELLo") = 1
+eq_ignore_case("Hello", "Hell") = 0
+
+== 数字解析 ==
+to_i64("42") = 1, i = 42
+to_i64("-7") = 1, i = -7
+to_i64("  12  ") = 1, i = 12
+to_i64("1_000_000") = 1, i = 1000000
+to_i64("0x1F") = 1, i = 31
+to_i64("-0x10") = 1, i = -16
+to_i64("0b1010") = 1, i = 10
+to_i64("0o17") = 1, i = 15
+to_i64(INT64_MAX 字面量) = 1, i == INT64_MAX = 1
+to_i64(INT64_MIN 字面量) = 1, i == INT64_MIN = 1
+to_i64(INT64_MAX+1 溢出) = 0
+to_i64("12abc" 尾随垃圾) = 0
+to_i64("" 空串) = 0
+to_i64("-" 只有符号) = 0
+to_i64("1.5" 小数点) = 0
+to_u64(UINT64_MAX 字面量) = 1, u == UINT64_MAX = 1
+to_u64("-1" 负号) = 0
+to_i64(INT_MAX 字面量) = 1, n = 2147483647
+to_i64(INT_MAX+1 字面量) = 1, n = 2147483648
+to_i64(int64 上界之外) = 0
+to_f64("3.5") = 1, d = 3.5
+to_f64("1e3") = 1, d = 1000
+to_f64("-0.25") = 1, d = -0.25
+to_f64("abc" 非数字) = 0
+to_f64("1.5x" 尾随垃圾) = 0
+
+== split / join ==
+split 段数 = 4
+  parts[0] = |a|
+  parts[1] = |bb|
+  parts[2] = ||
+  parts[3] = |ccc|
+join("|") = a|bb||ccc
+
+== 回归：cb_sv_chop_by_delim_r ==
+多个分隔符 -> left = |a=b|, 剩下 = |c|
+无分隔符 -> whole = |nosep|, 原视图 count = 0
+分隔符在开头 -> empty count = 0, 剩下 = |x|
+视图贴到缓冲区末尾 -> got count = 3, tight count = 0
+
+== utf8 ==
+decode("中") = 1, cp = U+4E2D, len = 3
+decode("A") = 1, cp = 0x41, len = 1
+encode(U+4E2D) = 3, 往返一致 = 1
+encode(U+1F600 emoji) = 4
+encode(U+110000 超范围) = 0
+encode(U+D800 代理区) = 0
+utf8_next 第 1 个码点: 1, cp = 0x61
+utf8_next 第 2 个码点: 1, cp = 0x4E2D
+utf8_next 第 3 个码点: 1, cp = 0x62
+迭代到尾部: 0, 剩余字节 = 0
+validate("a中b") = 1
+validate("a\xFFb") = 0, bad 下标 = 1
+validate(截断的 3 字节序列) = 0
+validate(overlong "\xC0\x80") = 0
+
+== 路径处理 ==
+path_is_absolute("/x/y") = 1
+path_is_absolute("x/y") = 0
+path_join("a", "b") = a/b
+path_join("a/", "b") = a/b
+path_join("/", "b") = /b
+path_join("a", "/b") = /b
+path_join("", "b") = b
+path_normalize("/a/b/../c") = /a/c
+path_normalize("a/./b//c") = a/b/c
+path_normalize("../a") = ../a
+path_normalize("/..") = /
+path_normalize("a/b/../../c") = c
+path_normalize("") = .
+path_normalize("a/") = a
+path_replace_ext("a/b.c", "h") = a/b.h
+path_replace_ext("a/b.c", ".h") = a/b.h
+path_replace_ext("a/b", "h") = a/b.h
+path_replace_ext("a/b.c", NULL) = a/b
+path_replace_ext("a.b/c", "h") = a.b/c.h
+path_absolute("x") 是绝对路径 = 1
+path_absolute("/a/../b") = /b

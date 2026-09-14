@@ -1,0 +1,49 @@
+
+== 读文件 ==
+读不存在的文件 -> 0
+读一个目录 -> 0
+
+== 写文件 ==
+写到不存在的目录 -> 0
+原子写到不存在的目录 -> 0
+
+== 删除 / 复制 / 改名 ==
+删不存在的文件 -> 0
+删不存在的目录 -> 0
+复制不存在的源 -> 0
+改名不存在的源 -> 0
+
+== 目录与工作目录 ==
+切到不存在的目录 -> 0
+mkdir_p 空串 -> 0
+glob 一个不存在的目录 -> 0
+read_entire_dir 不存在的目录 -> 0
+
+== 查询类 ==
+get_file_type(no-such-file.txt) = -1（负数即失败）
+file_exists(no-such-file.txt) = 0
+file_size(no-such-file.txt) == (size_t)-1 -> 1
+file_mtime(no-such-file.txt) = -1
+不存在的路径 == CB_FILE_ERROR -> 1
+read_symlink(cb.h) == NULL -> 1
+mmap_open(no-such-file.bin) -> 0
+
+== 参数校验类 ==
+数字解析 sv_to_i64("abc") -> 0
+无符号解析 sv_to_u64("-1") -> 0
+浮点解析 sv_to_f64("1.5x") -> 0
+utf8_validate("\xFF") -> 0
+utf8_encode(0x110000) 返回的字节数 = 0
+空参数集里查开关 -> 0
+
+== Windows 错误信息 ==
+cb_win32_error_message(ERROR_FILE_NOT_FOUND) 非空 -> 1
+未知错误码也返回字符串（非 NULL）-> 1
+
+== 成功后确实返回 true（对照组）==
+mkdir_p 嵌套创建 err_paths_work/a/b -> 1
+写入 err_paths_work/x.txt -> 1
+复制 x.txt -> y.txt -> 1
+改名 y.txt -> z.txt -> 1
+删除 z.txt -> 1
+递归删除 err_paths_work -> 1

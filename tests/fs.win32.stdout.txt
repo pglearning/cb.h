@@ -1,0 +1,92 @@
+
+== 文件元信息 ==
+写入 meta.txt -> 1
+cb_file_size(meta.txt) = 10
+cb_get_file_type(meta.txt) = 0（普通文件/不是目录/不是链接 = 1/1/1）
+cb_file_mtime(meta.txt) > 1600000000 -> 1
+不存在的文件 size 返回 -1 -> 1
+不存在的文件 mtime = -1
+不存在的路径返回 CB_FILE_ERROR -> 1
+cb_get_file_type(".") == CB_FILE_DIRECTORY -> 1
+
+== 回归：cb_read_entire_file 的错误处理 ==
+读不存在的文件 -> 0
+准备一个正常文件 ok.txt -> 1
+读正常文件 -> 1，count = 5，内容 = |hello|
+读目录 -> 0
+同一 sb 读两次后 count = 10，内容 = |hellohello|
+
+== mkdir -p ==
+递归创建 a/b/c/d -> 1
+每一层都被创建 = 1/1/1/1
+对已存在的目录再调用仍成功 -> 1
+在已有树上继续加深 a/b/x/y -> 1
+新分支被创建 -> 1
+
+== 原子写 ==
+原子写 v1 -> 1
+读回 atomic.txt -> 1
+内容是 |v1|（2 字节）
+原子写覆盖 version-2 -> 1
+再次读回 -> 1
+覆盖后内容是 |version-2|（9 字节）
+列目录 -> 1
+原子写留下的 .tmp 垃圾文件个数 = 0
+
+== 符号链接 ==
+创建目标文件 target.txt -> 1
+识别出符号链接 -> 1
+普通文件不是链接 -> 1
+不跟随链接（lstat 语义）-> 1
+cb_read_symlink(link.txt) = target.txt
+通过链接读文件 -> 1
+读到的内容 = |target-data|（11 字节）
+对非链接调用 read_symlink 返回 NULL -> 1
+
+== glob 匹配（纯函数）==
+cb_glob_match("*.c", "main.c") = 1
+cb_glob_match("*.c", "main.h") = 0
+cb_glob_match("*", "anything") = 1
+cb_glob_match("*", "") = 1
+cb_glob_match("a*c", "abbbc") = 1
+cb_glob_match("a*c", "ac") = 1（* 可为空）
+cb_glob_match("a*c", "ab") = 0
+cb_glob_match("?.c", "a.c") = 1
+cb_glob_match("?.c", "ab.c") = 0（? 只匹配一个字符）
+cb_glob_match("[abc]x", "bx") = 1
+cb_glob_match("[abc]x", "dx") = 0
+cb_glob_match("[a-z]1", "q1") = 1
+cb_glob_match("[a-z]1", "Q1") = 0
+cb_glob_match("[!abc]x", "dx") = 1
+cb_glob_match("[!abc]x", "ax") = 0
+cb_glob_match("src/*/*.c", "src/a/b.c") = 1
+cb_glob_match("a*b*c", "aXXbYYc") = 1
+cb_glob_match("a*b*c", "aXXbYY") = 0
+cb_glob_match("", "") = 1
+cb_glob_match("", "x") = 0
+
+== glob 列目录 ==
+建 g/sub -> 1
+写 g/one.c -> 1
+写 g/two.c -> 1
+写 g/three.h -> 1
+写 g/sub/deep.c -> 1
+glob g/*.c -> 1
+匹配到 2 个 .c（不递归进 sub）
+路径是 dir/名字 形式（找到 one.c/two.c）= 1/1
+glob g/*.h -> 1，匹配 1 个
+glob g/* -> 1，匹配 4 个（全部 4 项）
+glob g/nomatch* -> 1，匹配 0 个（无匹配时返回空列表）
+
+== mmap ==
+写 map.txt -> 1
+mmap 打开 map.txt -> 1
+映射长度 = 30
+映射内容与文件一致 = 1
+close 清空句柄 = 1
+写空文件 empty.txt -> 1
+空文件 mmap 成功 -> 1
+空文件给的是空视图 = 1
+打开不存在的文件 -> 0
+同一个句柄可以重新打开 -> 1
+重新打开的映射长度 = 30

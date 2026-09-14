@@ -1,0 +1,2 @@
+output_paths[0] = dir2
+output_paths[1] = file1

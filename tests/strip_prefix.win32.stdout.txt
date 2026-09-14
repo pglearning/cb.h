@@ -1,0 +1,35 @@
+
+== 类型 / 宏 / 常量 ==
+String_View + SVLIT 可用（类型名去掉了 CB_ 前缀）: count = 9
+String_Builder 可用: count = 11, items = |hello world|
+ARRAY_LEN("abc") = 4
+日志级别常量可用（ERROR 因系统头占用而保留前缀）: INFO = 0, WARN = 1, CB_ERROR = 2, NO_LOGS = 3
+
+== 字符串 / 路径 ==
+sv_chop_by_delim / sv_eq 可用: head = |a|, sv = |b/c.txt|, sv_eq(head, "a") = 1, sv_eq(sv, "b/c.txt") = 1
+path_join 可用（Windows 用反斜杠）: dir\file.txt
+path_replace_ext 可用: a/b/c.md
+
+== 容器 ==
+DArray / da_append 可用: count = 3, items[0] = one, items[2] = three
+Map / map_put_cstr / map_get_cstr 可用: get("k") = 1, v = 7
+
+== 内存：temp / arena ==
+temp_sprintf 可用: temp-42
+temp_save / temp_rewind 可用: mark.count = 40
+Arena / arena_alloc 可用: xs[3] = 9
+
+== 文件系统 ==
+mkdir_if_not_exists 递归建目录 = 1
+write_entire_file 可用 = 1
+read_entire_file 可用 = 1, 读回内容 = |payload|, 与写入一致 = 1
+get_file_type 可用 = 0, FILE_REGULAR = 0
+delete_directory_recursively 可用 = 1
+
+== Cmd / 构建 API ==
+Cmd / cmd_append 可用: count = 2, items[0] = echo, items[1] = strip-prefix-ok
+needs_rebuild 可用（目标不存在 -> 需要重建） = 1
+
+== 带前缀的名字没有被破坏 ==
+cb_ 前缀的名字照样能用（别名是增量，不是替换）: cb_sv_eq(sv, sv) = 1
+cb_min 仍是带前缀的名字（没有别名 min）: cb_min(3, 5) = 3

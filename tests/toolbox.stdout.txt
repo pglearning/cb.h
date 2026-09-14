@@ -1,0 +1,70 @@
+
+== 数学与位运算 ==
+cb_min(3,7) = 3, cb_max(3,7) = 7
+cb_clamp(10,0,5) = 5, cb_clamp(-3,0,5) = 0, cb_clamp(2,0,5) = 2
+cb_align_up(5,8) = 8, cb_align_up(8,8) = 8
+cb_align_down(13,8) = 8, cb_align_down(8,8) = 8
+cb_is_pow2: 1 = 1, 1024 = 1, 0 = 0, 1000 = 0
+cb_next_pow2(0) = 1, cb_next_pow2(1) = 1
+cb_next_pow2(3) = 4, cb_next_pow2(5) = 8, cb_next_pow2(1024) = 1024
+cb_popcount64(0) = 0, cb_popcount64(1) = 1
+cb_popcount64(0xFF) = 8, cb_popcount64(UINT64_MAX) = 64
+cb_ctz64(1) = 0, cb_ctz64(8) = 3
+cb_ctz64(0) = 64
+cb_clz64(1) = 63, cb_clz64(0) = 64
+cb_rotl64(1,1) = 0x2, cb_rotl64(0x8000000000000000,1) = 0x1
+cb_rotr64(2,1) = 0x1, cb_rotr64(1,1) = 0x8000000000000000
+cb_rotl64(0x1234,0) = 0x1234, cb_rotl64(0x1234,64) = 0x1234
+cb_bswap32(0x12345678) = 0x78563412
+cb_bswap64(0x0123456789ABCDEF) = 0xefcdab8967452301
+cb_is_little_endian() = 1
+
+== 时间与日期 ==
+cb_time_to_iso8601(0) = 1970-01-01T00:00:00Z
+cb_time_to_iso8601(1000000000) = 2001-09-09T01:46:40Z
+cb_time_to_iso8601(1757729200) = 2025-09-13T02:06:40Z
+cb_time_now() > 1600000000 = 1
+cb_duration_to_str(0.42) = 420ms
+cb_duration_to_str(12.5) = 12.5s
+cb_duration_to_str(12.0) = 12s
+cb_duration_to_str(185) = 3m5s
+cb_duration_to_str(7325) = 2h2m
+cb_duration_to_str(-5) = 0ms
+
+== 随机数 ==
+同种子 100 次序列全同 = 1
+不同种子首次输出不同 = 1
+种子 0: v1 != 0 = 1, v1 != v2 = 1
+cb_rng_range(10) 1000 次全在 [0,10) = 1
+cb_rng_range(0) = 0
+cb_rng_range(1) = 0
+cb_rng_double 1000 次全在 [0,1) = 1
+洗牌后元素集合不变 = 1
+
+== 运行环境 ==
+cb_env_get(PATH) 非空 = 1
+cb_env_get(不存在的变量) == NULL = 1
+cb_env_set("CB_TEST_ENV_VAR", "hello-env") = 1
+set 之后读回 = hello-env
+cb_terminal_width() > 0 = 1
+cb_stdout_is_tty() = 0
+cb_color_enabled() = 0
+
+== hex dump ==
+cb_dump_hex(data, 7) 与 cb_dump_hex(NULL, 0) 已执行 = 1
+
+== CLI 参数解析 ==
+cb_args_has("verbose") = 1
+cb_args_has("j") = 1
+cb_args_has("nope") = 0
+cb_args_get("out", "?") = build/app2
+cb_args_get_first("out") = build/app
+cb_args_get("o", "?") = x
+cb_args_get("missing", "default") = default
+cb_args_positional_count() = 3
+  positional[0] = --not-an-option
+  positional[1] = file1
+  positional[2] = file2
+cb_args_positional(99) == NULL = 1
+cb_args_free 之后: options.items == NULL = 1, positionals.items == NULL = 1
+空命令行: positional_count = 0, has("x") = 0

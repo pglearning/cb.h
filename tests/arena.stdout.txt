@@ -1,0 +1,12 @@
+alloc(1) 非空且按 max_align_t 对齐 = 1
+alloc(8) 按 max_align_t 对齐 = 1
+alloc_aligned(8, 64) 按 64 对齐 = 1
+1MB 分配的首/中/尾字节 = 171 171 171
+20000 次小分配跨 region 后内容不一致的条数 = 0
+rewind 可跨 region 回滚并复用同一地址 = 1
+reset 后从首块起点重新分配 = 1
+arena_sprintf = value=42/end
+arena_strndup("abcdef", 3) = abc
+temp 回滚后复用同一块存储 = 1
+temp 内容 = temp-string
+arena_free 后 begin/end 均为 NULL = 1

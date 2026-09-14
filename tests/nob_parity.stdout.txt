@@ -1,0 +1,38 @@
+
+== CB_SVLIT：编译期 String_View 字面量 ==
+CB_SVLIT("hello")：count = 5，内容 = |hello|
+CB_SVLIT("")：count = 0
+CB_SVLIT_STATIC("static-literal")：count = 14，内容 = |static-literal|
+与 cb_sv_from_cstr("hello") 等价 -> 1
+CB_SVLIT("中文")：count = 6（多字节字面量按字节计长）
+两个字面量可直接比较 -> 1
+
+== cb_cmd_extend / cb_cmd_free ==
+extend 后 a.count = 5
+a.items[0] = cc
+a.items[1] = -c
+a.items[2] = main.c
+a.items[3] = -o
+a.items[4] = main.o
+cmd_free 清空句柄 items==NULL/count==0/capacity==0 = 1/1/1
+两个空 cmd extend 后 x.count = 0
+
+== cb_nanos_since_unspecified_epoch ==
+时间戳单调递增 = 1
+起点非零 = 1
+纳秒差换算成微秒是合理量级（0 < x < 60s）= 1
+
+== cb_needs_rebuild ==
+写出 out.bin -> 1
+写出 in.txt -> 1
+输出不存在时返回 1 -> 1
+输入不存在时返回 -1 -> -1
+返回值为 0 或 1 -> 1
+
+== cb_procs_wait_and_reset ==
+异步起第一条 -> 1
+异步起第二条 -> 1
+procs 里有 2 个进程
+wait_and_reset -> 1
+重置后 procs.count = 0
+数组内存保留可复用（items != NULL）= 1
