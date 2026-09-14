@@ -1655,6 +1655,16 @@ CBDEF CB_String_View cb_sv_from_cstr(const char* cstr);
 // 例：CB_String_View sv = cb_sv_from_cstr("  123abc456");
 //     cb_sv_chop_by_func(&sv, isspace) → "  "，sv = "123abc456"
 //     cb_sv_chop_by_func(&sv, isdigit) → "123"，sv = "abc456"
+// 前移视图。空视图的 data 允许是 NULL，而 NULL + 0 在 C 标准里是 UB
+//（UBSan: "applying zero offset to null pointer"，clang 18 会报），所以 n == 0 直接跳过。
+#define cb__sv_advance(sv, n)  \
+    do {                       \
+        if ((n) > 0) {         \
+            (sv)->data += (n); \
+            (sv)->count -= (n);\
+        }                      \
+    } while (0)
+
 CBDEF CB_String_View cb_sv_chop_by_func(CB_String_View* sv, int (*p)(int x));
 // 切到 delim 之前，返回切下来的部分，并丢弃这个 delim 字符。
 // 例：CB_String_View sv = cb_sv_from_cstr("  1223abc456");
@@ -1721,8 +1731,7 @@ CBDEF CB_String_View cb_sv_chop_by_func(CB_String_View* sv, int (*p)(int x))
     }
 
     CB_String_View result = cb_sv_from_parts(sv->data, i);
-    sv->count -= i;
-    sv->data += i;
+    cb__sv_advance(sv, i);
 
     return result;
 }
@@ -1736,13 +1745,7 @@ CBDEF CB_String_View cb_sv_chop_by_delim(CB_String_View* sv, char delim)
 
     CB_String_View result = cb_sv_from_parts(sv->data, i);
 
-    if (i < sv->count) {
-        sv->count -= i + 1;
-        sv->data += i + 1;
-    } else {
-        sv->count -= i;
-        sv->data += i;
-    }
+    cb__sv_advance(sv, i < sv->count ? i + 1 : i);
 
     return result;
 }
@@ -1757,15 +1760,13 @@ CBDEF CB_String_View cb_sv_chop_by_delim_r(CB_String_View* sv, char delim)
     if (i == 0) {
         // 没有分隔符：整体返回，原视图清空
         CB_String_View whole = cb_sv_from_parts(sv->data, sv->count);
-        sv->data += sv->count;
-        sv->count = 0;
+        cb__sv_advance(sv, sv->count);
         return whole;
     }
 
     size_t delim_index = i - 1; // i 是"分隔符下标 + 1"
     CB_String_View result = cb_sv_from_parts(sv->data, delim_index);
-    sv->data += delim_index + 1;
-    sv->count -= delim_index + 1;
+    cb__sv_advance(sv, delim_index + 1);
     return result;
 }
 
@@ -1776,9 +1777,7 @@ CBDEF CB_String_View cb_sv_chop_left(CB_String_View* sv, size_t n)
     }
 
     CB_String_View result = cb_sv_from_parts(sv->data, n);
-
-    sv->data += n;
-    sv->count -= n;
+    cb__sv_advance(sv, n);
 
     return result;
 }
@@ -1789,8 +1788,8 @@ CBDEF CB_String_View cb_sv_chop_right(CB_String_View* sv, size_t n)
         n = sv->count;
     }
 
-    CB_String_View result = cb_sv_from_parts(sv->data + sv->count - n, n);
-
+    // n == 0 时不要写 sv->data + sv->count - 0（空视图的 data 可能是 NULL）
+    CB_String_View result = cb_sv_from_parts(n > 0 ? sv->data + sv->count - n : sv->data, n);
     sv->count -= n;
 
     return result;
@@ -1800,6 +1799,11 @@ CBDEF bool cb_sv_ends_with(CB_String_View sv, CB_String_View suffix)
 {
     if (suffix.count > sv.count) {
         return false;
+    }
+    // 空后缀：任何视图都以它结尾。单独挡住这一支也避免对 NULL 做指针运算
+    // （sv.count == 0 时 sv.data 允许是 NULL，而 NULL + 0 按标准是 UB）。
+    if (suffix.count == 0) {
+        return true;
     }
 
     CB_String_View sv_tail = {
@@ -1854,7 +1858,7 @@ CBDEF CB_String_View cb_sv_trim_left(CB_String_View sv)
         i += 1;
     }
 
-    return cb_sv_from_parts(sv.data + i, sv.count - i);
+    return cb_sv_from_parts(i > 0 ? sv.data + i : sv.data, sv.count - i);
 }
 
 CBDEF CB_String_View cb_sv_trim_right(CB_String_View sv)
@@ -3540,13 +3544,7 @@ CBDEF CB_String_View cb__sv_chop_by_path_sep(CB_String_View* sv)
     while (i < sv->count && !cb_path_is_sep(sv->data[i])) i += 1;
 
     CB_String_View result = cb_sv_from_parts(sv->data, i);
-    if (i < sv->count) {
-        sv->data += i + 1;
-        sv->count -= i + 1;
-    } else {
-        sv->data += i;
-        sv->count -= i;
-    }
+    cb__sv_advance(sv, i < sv->count ? i + 1 : i);
     return result;
 }
 

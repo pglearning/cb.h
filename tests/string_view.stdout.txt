@@ -25,3 +25,12 @@ has_suffix = 0
 NULL 空视图 vs "" = 1
 空视图 vs 非空 = 0
 ends_with 空后缀 = 1
+空视图 chop_left(0)    -> count = 0
+空视图 chop_right(0)   -> count = 0
+空视图 chop_by_delim   -> count = 0
+空视图 chop_by_delim_r -> count = 0
+空视图 chop_by_func    -> count = 0
+空视图 trim/left/right -> 0 / 0 / 0
+空视图 ends_with/starts_with 空 -> 1 / 1
+空视图 find/find_sv    -> -1 / -1
+空视图 split_next      -> 0

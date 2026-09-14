@@ -76,6 +76,29 @@ int main(void)
     printf("空视图 vs 非空 = %d\n", (int)cb_sv_eq(null_a, sv_c));
     printf("ends_with 空后缀 = %d\n", (int)cb_sv_ends_with(null_a, null_b));
 
+    // 遍历所有切分/裁剪函数，全部喂空视图（data 可能是 NULL）：
+    // 这是 UB 高发区——对 NULL 做 +0 偏移时 UBSan 会报 "applying zero offset to null pointer"。
+    {
+        CB_String_View e = CB_ZERO;
+        printf("空视图 chop_left(0)    -> count = %zu\n", cb_sv_chop_left(&e, 0).count);
+        e = (CB_String_View)CB_ZERO;
+        printf("空视图 chop_right(0)   -> count = %zu\n", cb_sv_chop_right(&e, 0).count);
+        e = (CB_String_View)CB_ZERO;
+        printf("空视图 chop_by_delim   -> count = %zu\n", cb_sv_chop_by_delim(&e, ',').count);
+        e = (CB_String_View)CB_ZERO;
+        printf("空视图 chop_by_delim_r -> count = %zu\n", cb_sv_chop_by_delim_r(&e, ',').count);
+        e = (CB_String_View)CB_ZERO;
+        printf("空视图 chop_by_func    -> count = %zu\n", cb_sv_chop_by_func(&e, isspace).count);
+        e = (CB_String_View)CB_ZERO;
+        printf("空视图 trim/left/right -> %zu / %zu / %zu\n",
+               cb_sv_trim(e).count, cb_sv_trim_left(e).count, cb_sv_trim_right(e).count);
+        e = (CB_String_View)CB_ZERO;
+        printf("空视图 ends_with/starts_with 空 -> %d / %d\n",
+               (int)cb_sv_ends_with(e, e), (int)cb_sv_starts_with(e, e));
+        printf("空视图 find/find_sv    -> %d / %d\n", cb_sv_find(&e, 'x'), cb_sv_find_sv(&e, e, 0));
+        printf("空视图 split_next      -> %d\n", (int)cb_sv_split_next(&e, ',', &e));
+    }
+
     cb_sb_free(sb);
     return 0;
 }

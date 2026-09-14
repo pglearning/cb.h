@@ -151,11 +151,11 @@
 | StringView | `cb_sv_starts_with_cstr` | `examples/07_strings.c`、`tests/string_view.c` |
 | StringView | `cb_sv_chop_prefix` | `examples/07_strings.c`、`tests/string_view.c` |
 | StringView | `cb_sv_chop_suffix` | `examples/07_strings.c`、`tests/string_view.c` |
-| StringView | `cb_sv_trim_left` | `examples/07_strings.c` |
-| StringView | `cb_sv_trim_right` | `examples/07_strings.c` |
+| StringView | `cb_sv_trim_left` | `examples/07_strings.c`、`tests/string_view.c` |
+| StringView | `cb_sv_trim_right` | `examples/07_strings.c`、`tests/string_view.c` |
 | StringView | `cb_sv_trim` | `examples/07_strings.c`、`tests/string_view.c`、`bench/bench.c` |
 | StringView | `cb_sv_find` | `examples/07_strings.c`、`tests/string_view.c`、`bench/bench.c` |
-| StringView | `cb_sv_find_sv` | `examples/07_strings.c` |
+| StringView | `cb_sv_find_sv` | `examples/07_strings.c`、`tests/string_view.c` |
 | UTF-8 Support | `cb_sv_utf8_len` | `examples/08_utf8.c`、`bench/bench.c` |
 | StringView Tools（大小写 / 数字解析 / split-join） | `cb_sv_to_temp_upper` | `examples/07_strings.c`、`tests/stdlib.c`、`bench/bench.c` |
 | StringView Tools（大小写 / 数字解析 / split-join） | `cb_sv_to_temp_lower` | `examples/07_strings.c`、`tests/stdlib.c` |
@@ -163,7 +163,7 @@
 | StringView Tools（大小写 / 数字解析 / split-join） | `cb_sv_to_i64` | `examples/07_strings.c`、`tests/error_paths.c`、`tests/stdlib.c`、`bench/bench.c` |
 | StringView Tools（大小写 / 数字解析 / split-join） | `cb_sv_to_u64` | `examples/07_strings.c`、`tests/error_paths.c`、`tests/stdlib.c` |
 | StringView Tools（大小写 / 数字解析 / split-join） | `cb_sv_to_f64` | `examples/07_strings.c`、`tests/error_paths.c`、`tests/stdlib.c`、`bench/bench.c` |
-| StringView Tools（大小写 / 数字解析 / split-join） | `cb_sv_split_next` | `examples/07_strings.c`、`tests/stdlib.c` |
+| StringView Tools（大小写 / 数字解析 / split-join） | `cb_sv_split_next` | `examples/07_strings.c`、`tests/stdlib.c`、`tests/string_view.c` |
 | StringView Tools（大小写 / 数字解析 / split-join） | `cb_sb_append_join` | `examples/07_strings.c`、`tests/stdlib.c` |
 | StringView Tools（大小写 / 数字解析 / split-join） | `cb_utf8_decode` | `examples/08_utf8.c`、`tests/stdlib.c`、`bench/bench.c` |
 | StringView Tools（大小写 / 数字解析 / split-join） | `cb_utf8_encode` | `examples/08_utf8.c`、`tests/error_paths.c`、`tests/stdlib.c`、`bench/bench.c` |

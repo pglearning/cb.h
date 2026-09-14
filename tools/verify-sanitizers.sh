@@ -26,7 +26,10 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 CC=${CC:-clang}
-SAN=${SAN:-address,undefined}
+# 显式带上 pointer-overflow：对 NULL 做 +0 偏移（空视图的 data 是 NULL）在各版本
+# clang 上的检测能力不一致——本地 clang 22 默认不报，CI 的 clang 18 会报。
+# 这一类 UB 只能靠显式打开才稳。
+SAN=${SAN:-address,undefined,pointer-overflow}
 BUILD_DIR=${BUILD_DIR:-$(mktemp -d)}
 
 # 与 cb.c 里的 test_names[] 保持一致
