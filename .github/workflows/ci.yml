@@ -19,34 +19,25 @@ jobs:
       - name: 跑测试（含双编译器 C++ 兼容性检查）
         run: ./cb test
 
-      - name: 跑全部示例（${{ matrix.cc }} -x ${{ matrix.lang }}）
-        # 示例必须真的跑起来：02/03/04 会自己去编译 cb.c 与 examples/01_hello.c，
+      - name: 跑全部示例（每个示例单独编译并运行）
+        # 示例必须真的跑起来：01/02/03 会自己去编译它们写出来的小程序，
         # 路径或命令行写错只有跑过才发现（本地不跑就等于没检查）。
-        # 示例的输出是给人看的说明（14 个共 800 多行），矩阵里再乘 4 份会淹没日志，
-        # 所以收进 build/examples.log：成功报一行，失败打印末尾 200 行——
-        # 编译错误与 "example X failed" 都在里面，够定位。
+        # 输出收进 build/examples.log：成功报一行，失败打印末尾 200 行。
         run: |
           mkdir -p build
-          if ./cb examples > build/examples.log 2>&1; then
-            echo "全部示例通过（$(wc -l < build/examples.log) 行完整输出收在 build/examples.log）"
-          else
-            echo "::error::./cb examples 失败，以下是输出末尾 200 行"
-            tail -n 200 build/examples.log
-            exit 1
-          fi
-
-  bench:
-    # 基准单独一个 job：它只在 -O2 下有意义，跟着 linux job 的 4 个矩阵组合跑等于把同一份
-    # 数字测 4 遍。这里用默认 cc 编一次构建脚本，跑完整套基准，退出码必须为 0。
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: 构建构建脚本
-        run: cc -o cb cb.c
-
-      - name: 跑性能基准
-        run: ./cb bench
+          : > build/examples.log
+          failed=0
+          for src in examples/*.c; do
+            name=$(basename "$src" .c)
+            if cc -std=c99 -D_POSIX_C_SOURCE=200112L -Wall -Wextra -I. "$src" -o "build/$name" >> build/examples.log 2>&1 \
+               && "./build/$name" >> build/examples.log 2>&1; then
+              echo "ok   $name"
+            else
+              echo "::error::$name 失败"
+              failed=$((failed + 1))
+            fi
+          done
+          if [ "$failed" -ne 0 ]; then tail -n 200 build/examples.log; exit 1; fi
 
   cxx-tests:
     # 为什么单独一个 job：linux job 里 C++ 那两个组合已经在跑 ./cb test，但本地开发者
@@ -69,8 +60,11 @@ jobs:
       - name: 严格警告矩阵（要求 0 错误 0 警告）
         run: |
           set -e
-          for spec in "clang -std=gnu11" "clang -std=gnu17" "clang -std=gnu23" \
-                      "gcc -std=gnu11" "clang -std=c11 -D_POSIX_C_SOURCE=200809L"; do
+          for spec in "clang -std=c99 -D_POSIX_C_SOURCE=200112L -pedantic" \
+                      "gcc -std=c99 -D_POSIX_C_SOURCE=200112L -pedantic" \
+                      "clang -std=c11 -D_POSIX_C_SOURCE=200112L" \
+                      "gcc -std=c11 -D_POSIX_C_SOURCE=200112L" \
+                      "clang -std=gnu99" "gcc -std=gnu99"; do
             echo "== $spec =="
             out=$($spec -Wall -Wextra -I. -fsyntax-only cb.c 2>&1) || true
             echo "$out"
@@ -82,9 +76,10 @@ jobs:
 
       - name: 开启 CB_STRIP_PREFIX 后仍要 0 警告
         run: |
-          printf '#define CB_STRIP_PREFIX\n#include "cb.h"\nint main(void){return 0;}\n' > /tmp/sp.c
-          clang -std=gnu11 -Wall -Wextra -Werror -I. -c /tmp/sp.c -o /tmp/sp.o
-          gcc   -std=gnu11 -Wall -Wextra -Werror -I. -c /tmp/sp.c -o /tmp/sp2.o
+          mkdir -p build
+          printf '#define CB_STRIP_PREFIX\n#include "cb.h"\nint main(void){return 0;}\n' > build/sp.c
+          clang -std=c99 -D_POSIX_C_SOURCE=200112L -Wall -Wextra -Werror -I. -c build/sp.c -o build/sp.o
+          gcc   -std=c99 -D_POSIX_C_SOURCE=200112L -Wall -Wextra -Werror -I. -c build/sp.c -o build/sp2.o
           echo "clang/gcc: 0 警告"
 
   windows-cross:
@@ -107,8 +102,9 @@ jobs:
         # mingw 的 <wingdi.h> 定义了 ERROR，别名区必须用 #ifndef 让系统定义优先。
         # 这里用 -Werror 把"宏重定义"变成硬失败。
         run: |
-          printf '#define CB_STRIP_PREFIX\n#include "cb.h"\nint main(void){return 0;}\n' > /tmp/sp.c
-          x86_64-w64-mingw32-gcc -std=gnu11 -Wall -Wextra -Werror -I. -c /tmp/sp.c -o /tmp/sp.o
+          mkdir -p build
+          printf '#define CB_STRIP_PREFIX\n#include "cb.h"\nint main(void){return 0;}\n' > build/sp.c
+          x86_64-w64-mingw32-gcc -std=c99 -Wall -Wextra -Werror -I. -c build/sp.c -o build/sp.o
           echo "mingw: 0 警告"
 
   sanitizers:
@@ -121,12 +117,3 @@ jobs:
 
       - name: ASan + UBSan + LeakSanitizer
         run: tools/verify-sanitizers.sh
-
-  docs:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: 校验文档与 cb.h 同步
-        # 两个作用：文档没有手改导致的漂移；没有任何公共接口是"没人用过"的
-        run: python3 tools/gen-docs.py --check

@@ -1,11 +1,9 @@
-// 错误路径测试：确认「失败时返回 false / NULL」在全库范围内成立。
-// 这里把每一次调用的实际返回值都打出来（期望 0 / -1 / NULL），失败信号来自 golden 比对。
 #include "test_diagnostics.h"
 #include "cb.h"
 
 int main(void)
 {
-    // 预期失败的用例，静音日志免得刷屏
+
     cb_minimal_log_level = CB_NO_LOGS;
 
     CB_String_Builder sb = CB_ZERO;
@@ -42,24 +40,21 @@ int main(void)
            (int)(cb_get_file_type("no-such-file.txt") == CB_FILE_ERROR));
     printf("read_symlink(cb.h) == NULL -> %d\n", (int)(cb_read_symlink("cb.h") == NULL));
     printf("mmap_open(no-such-file.bin) -> %d\n", (int)cb_mmap_open("no-such-file.bin", &mm));
-    cb_mmap_close(&mm); // 失败之后 close 也必须安全
+    cb_mmap_close(&mm);
 
     printf("\n== 参数校验类 ==\n");
     printf("数字解析 sv_to_i64(\"abc\") -> %d\n", (int)cb_sv_to_i64(CB_SVLIT("abc"), NULL));
     printf("无符号解析 sv_to_u64(\"-1\") -> %d\n", (int)cb_sv_to_u64(CB_SVLIT("-1"), NULL));
     printf("浮点解析 sv_to_f64(\"1.5x\") -> %d\n", (int)cb_sv_to_f64(CB_SVLIT("1.5x"), NULL));
     printf("utf8_validate(\"\\xFF\") -> %d\n", (int)cb_utf8_validate(cb_sv_from_parts("\xFF", 1), NULL));
-    // 这两个用例必须用具名变量，不能写内联复合字面量：
-    //   (char[4]){0}      C++ 下是临时数组，退化成指针时报 taking address of temporary array
-    //   &(CB_Args)CB_ZERO C++ 下是取右值地址，报 taking address of rvalue
-    // 具名变量在 C 与 C++ 下都是普通对象，行为一致。
+
     char utf8_out[4] = {0};
     printf("utf8_encode(0x110000) 返回的字节数 = %zu\n", cb_utf8_encode(0x110000, utf8_out));
     CB_Args empty_args = CB_ZERO;
     printf("空参数集里查开关 -> %d\n", (int)cb_args_has(&empty_args, "x"));
 
 #ifdef _WIN32
-    // cb_win32_error_message 是 Windows 专属 API，Linux 上没有。
+
     printf("\n== Windows 错误信息 ==\n");
     {
         char* msg = cb_win32_error_message(ERROR_FILE_NOT_FOUND);

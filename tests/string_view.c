@@ -1,6 +1,3 @@
-// String_View 实测：chop 系列 / trim / find / 前后缀 / 空视图回归
-//
-// 风格：纯 printf + golden 比对，测试只把实际观察到的值打出来。
 #include "test_diagnostics.h"
 #include "cb.h"
 
@@ -69,7 +66,6 @@ int main(void)
     printf("|" CB_SV_FMT "|\n", CB_SV_ARG(svv));
     printf("|" CB_SV_FMT "|\n", CB_SV_ARG(sv));
 
-    // ------------------------------------------------ 空视图（data 可以是 NULL）
     CB_String_View null_a = CB_ZERO;
     CB_String_View null_b = CB_ZERO;
     printf("两个 NULL 空视图相等 = %d\n", (int)cb_sv_eq(null_a, null_b));
@@ -77,8 +73,6 @@ int main(void)
     printf("空视图 vs 非空 = %d\n", (int)cb_sv_eq(null_a, sv_c));
     printf("ends_with 空后缀 = %d\n", (int)cb_sv_ends_with(null_a, null_b));
 
-    // 遍历所有切分/裁剪函数，全部喂空视图（data 可能是 NULL）：
-    // 这是 UB 高发区——对 NULL 做 +0 偏移时 UBSan 会报 "applying zero offset to null pointer"。
     {
         CB_String_View e = CB_ZERO;
         printf("空视图 chop_left(0)    -> count = %zu\n", cb_sv_chop_left(&e, 0).count);

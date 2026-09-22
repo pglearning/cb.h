@@ -16,7 +16,7 @@ Map / map_put_cstr / map_get_cstr 可用: get("k") = 1, v = 7
 
 == 内存：temp / arena ==
 temp_sprintf 可用: temp-42
-temp_save / temp_rewind 可用: mark.count = 40
+temp_save / temp_rewind 可用: mark.count = 48
 Arena / arena_alloc 可用: xs[3] = 9
 
 == 文件系统 ==

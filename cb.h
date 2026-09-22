@@ -1,138 +1,71 @@
-// cc：C 编译器驱动（gcc / clang），cb.h 的构建 API 拼的就是它的命令行。
-//   -c 只编译 / -o 输出文件 / -g 调试 / -O2 优化 / -I 头文件目录 / -L 库目录 /
-//   -l 库名 / -D 定义 / -Wall 告警 / -std 语言标准
-// 源文件、头文件、.o、.so 都能直接作为输入传给 cc：
-//   cc main.c other.c -I other.h cc.h -L math.so func.so -l func math -o a && a
-//
-
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //  NOTE:
-//      - header-only：任何 .c 只要 #include "cb.h" 就能用全部功能，不再需要 #define CB_IMPLEMENTATION
-//      - 文件结构：配置宏 -> 平台头 -> 通用宏 -> 类型 -> 函数声明 -> 函数定义（两区按同一顺序分节）
-//      - 语言基线 C11；裸 clang/gcc 直接编译即可，无需任何额外 -D 参数
-//      - 版本：CB_VERSION_MAJOR / CB_VERSION_MINOR / CB_VERSION_PATCH / CB_VERSION_STRING
+//      - stb-style single header: define CB_IMPLEMENTATION in exactly one .c before including
+//        cb.h; every other .c just includes it and sees the declarations.
+//      - Layout: config macros -> platform headers -> general macros -> types -> declarations
+//        (inside the CB_H_ guard) -> definitions (behind CB_IMPLEMENTATION), same section order.
+//      - Baseline: C99 and C++11. cb.h defines no feature-test macro, exactly like nob.h: build
+//        with the compiler default dialect or with -std=gnu99, and pass -D_POSIX_C_SOURCE=200112L
+//        yourself when you compile with strict -std=c99 (otherwise lstat/readlink/clock_gettime/
+//        nanosleep/PATH_MAX stay undeclared).
 //
-//  可选的编译期开关（共 17 个；在 #include "cb.h" 之前定义才生效，不定义就用下面的默认值）：
+//  Compile switches (define before #include "cb.h"; every one has an #ifndef guard):
+//      CB_ENABLE_ECHO                  print fs/cmd operations as they run
+//      CB_DONT_DELETE_OLD_CB           keep the previous binary when self-rebuilding
+//      CB_TRACE_CMD_RUN_FAIL_LOCATION  print the call site when cb_cmd_run() fails
+//      CB_ALLOC_TRACK                  track every allocation, see cb_alloc_report()
+//      CB_STRIP_PREFIX                 generate cb_-less aliases (end of this file)
+//      CB_IMPLEMENTATION               emit the definitions (exactly one .c defines it)
+//      CB_OOM(size)                    replace the default out-of-memory handler
+//      CB_WARN_DEPRECATED              make CB_DEPRECATED warn
+//      CB_PATH_MAX                     path buffer size, default PATH_MAX or 4096
+//      CB_TIMER_MAX_DEPTH              timer nesting limit, default 64
+//      CB_ARENA_REGION_INIT_CAPACITY   first arena block, default 64KB
+//      CB_ARENA_ALIGN                  arena allocation alignment, default CB__MAX_ALIGN
+//      CB_THREAD_LOCAL                 thread-local specifier for the temp storage
+//      CB_DA_INIT_CAP                  dynamic array first capacity, default 256
+//      CB_BITSET_WORD_BITS             bitset word size, default 64
+//      CB_MAP_INIT_CAPACITY            hash map initial buckets, default 16
+//      CB_WIN32_ERR_MSG_SIZE           Win32 error buffer, default 4KB
+//      CB_REALLOC / CB_FREE / CB_REALLOC_RAW / CB_FREE_RAW
+//      CB_TEMP_CAPACITY / CB_ASSERT / CB_PANIC_BACKTRACE
 //
-//    行为开关（7 个，默认全关）：
-//      CB_ENABLE_ECHO                  文件系统/命令等操作打印提示信息（默认关）
-//      CB_DONT_DELETE_OLD_CB           保留上一次编译出的旧二进制（默认关：旧的会被删掉）
-//      CB_TRACE_CMD_RUN_FAIL_LOCATION  命令失败时打印其调用点 文件:行号（默认关）
-//      CB_ALLOC_TRACK                  每次分配带内部追踪头，可统计与报告泄漏（默认关）
-//      CB_STRIP_PREFIX                 生成去 cb_ 前缀的别名（默认关；别名区在文件末尾，由 tools/gen-docs.py 生成）
-//      CB_SHARED_STATE[_IMPL]          多 TU 共享全局状态（默认关：每个 TU 各一份，见 General 一节）
-//      CB_OOM(size)                    顶掉默认的 OOM 处理器（默认打印后 abort，见"内存分配收口"一节）
+//  Other macros: CB_ARRAY_LEN / CB_ARRAY_GET / CB_UNUSED / CB_ZERO / CB_LINE_END / CB_CLIT /
+//      CB_DECLTYPE_CAST / cb_shift / cb_swap / CB_TODO / CB_UNREACHABLE / CB_DEPRECATED / CB_LOG_AT /
+//      CB_NANOS_PER_SEC.
 //
-//    容量 / 参数微调（9 个，默认值如下）：
-//      CB_PATH_MAX                     路径缓冲上限，默认 PATH_MAX（系统没定义它时 4096）
-//      CB_TIMER_MAX_DEPTH              计时器嵌套深度上限，默认 64（统计表本身按需增长）
-//      CB_ARENA_REGION_INIT_CAPACITY   arena / temp 首块容量，默认 64KB（写满自动追加新块，不是总量上限）
-//      CB_ARENA_ALIGN                  arena 分配对齐，默认 alignof(max_align_t)
-//      CB_THREAD_LOCAL                 线程局部存储说明符，默认 C 下 _Thread_local、C++ 下 thread_local
-//                                      （单线程程序定义成空可以省掉 TLS 访问开销）
-//      CB_DA_INIT_CAP                  动态数组首次扩容的容量，默认 256
-//      CB_BITSET_WORD_BITS             位图一个字多少位，默认 64（内部按 uint64_t 字存储）
-//      CB_MAP_INIT_CAPACITY            HashMap 初始桶数，默认 16（到负载上限后按 2 倍增长）
-//      CB_WIN32_ERR_MSG_SIZE           Windows 错误信息缓冲大小，默认 4KB（非 Windows 平台无效果）
-//
-//    还有一个（1 个）：
-//      CB_WARN_DEPRECATED              让 CB_DEPRECATED 真的展开成编译器的 deprecated 属性（默认关：标了也不报警告）
-//
-//    以上每一个都在 cb.h 里有 #ifndef 守卫，在 #include 之前定义即可覆盖。
-//    另有几个开关写在各自的小节里：CB_REALLOC / CB_FREE / CB_REALLOC_RAW / CB_FREE_RAW（内存分配收口）、
-//    CB_TEMP_CAPACITY（Arena / Temp Storage）、CB_ASSERT / CB_PANIC_BACKTRACE（Logger / Panic）。
-//    逐个开关的示例见 examples/14_config_switches.c，总览表见 examples/README.md。
-//
-//  设计取舍（不是 bug；遇到了按这里说的做）：
-//      1. arena 不支持单独释放，只支持整体复位/整体回收：cb_arena_reset 把游标归零、内存留给下次
-//         复用，cb_arena_free 才还给系统。用 arena 后端建的 map 重哈希时产生的旧槽位同样要等复位/
-//         释放。要精确回收就用默认的 realloc 后端，或者 cb_map_init_capacity 时一次给足容量。
-//      2. C++ 下 cb_return_defer 要求所有变量声明写在第一个 goto 之前（C++ 不允许 goto 跳过带
-//         初始化的声明）；C 下没有这个限制。
-//      3. cb_da_* 宏对"任何具备 items / count / capacity 三个字段的结构体"通用，刻意不做类型检查：
-//         CB_DArray、CB_String_Builder、CB_Cmd、CB_Procs 等十几个容器共用同一组宏，代价是字段名
-//         写错时报错信息不好看。
-//      4. C 里 cb_min / cb_max / cb_clamp 只覆盖 15 个标准算术类型（_Bool / char / signed char /
-//         unsigned char / short / unsigned short / int / unsigned int / long / unsigned long /
-//         long long / unsigned long long / float / double / long double），枚举与指针要先显式转换；
-//         C++ 的模板版没有这个限制。
-//      5. 分配失败默认 abort。容器 / arena / temp 的分配失败没有返回值可传，统一走死亡开关 CB_OOM；
-//         能优雅失败的 API（读文件、起进程、cmd）仍然返回 false。
-//         想自己接管就在 include 之前 #define CB_OOM(size) 你的处理器(size)。
+//  Rules that change how you call the API:
+//      - Arena and temp memory are released as a whole (cb_arena_reset / cb_arena_free),
+//        never per allocation.
+//      - C++: cb_return_defer() needs every declaration to appear before the first goto.
+//      - cb_da_* macros accept any struct with items/count/capacity and are not type checked.
+//      - C: cb_min/cb_max/cb_clamp evaluate each argument twice outside GCC/Clang; C++ is templated.
+//      - Allocation failure aborts through CB_OOM; fallible APIs still return false.
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-// 分节目录（按文件顺序）
-//
-//   版本
-//   Platform Header
-//   General
-//   内存分配收口
-//   Logger / Panic
-//   Timer
-//   Arena / Temp Storage
-//   Dynamic Array
-//   Bitset
-//   Ring Buffer
-//   Sort
-//   StringBuilder
-//   StringView
-//   UTF-8 Support
-//   StringView Tools（大小写 / 数字解析 / split-join）
-//   HashMap
-//   HashMap：uint64 键版本
-//   File System
-//   路径处理
-//   File System 扩展：元信息 / 递归建目录 / 原子写 / 符号链接 / glob / mmap
-//   Math & Bits
-//   Time & Date
-//   Random
-//   Runtime Environment
-//   Hex Dump
-//   CLI Args
-//   Process & FD
-//   Cmd
-//   Cmd Chain：把多条命令用管道串起来
-//   C Builder
-//
-// 跳转：在本文件内搜索节名即可，每一节都以一排 //// 横幅开头。
+// Sections (search the title to jump; every section starts with a row of ////):
+//      Platform Header / General / Allocator / Arena + Temp Storage / Logger + Panic / Timer /
+//      Dynamic Array / Bitset / Ring Buffer / Sort / StringBuilder / StringView / UTF-8 Support /
+//      StringView Tools / HashMap / HashMap (uint64 keys) / File System / Path /
+//      File System Extras / Math + Bits / Time + Date / Random / Runtime Environment / Hex Dump /
+//      CLI Args / Process + FD / Cmd / Cmd Chain / Build Flags / C Builder / CB_STRIP_PREFIX
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-#ifndef STD_CB_H
-#define STD_CB_H
+#ifndef CB_H_
+#define CB_H_
 
-////////////////////////////////////////////////////////////////////////////////////////////////////
-// 版本
-////////////////////////////////////////////////////////////////////////////////////////////////////
-// 语义化版本。数字是唯一真源，版本字符串由数字拼出来（改一处即可）。
-#define CB_VERSION_MAJOR 1
-#define CB_VERSION_MINOR 1
-#define CB_VERSION_PATCH 0
-
-#define CB__STRINGIFY_(x) #x
-#define CB__STRINGIFY(x) CB__STRINGIFY_(x)
-#define CB_VERSION_STRING \
-    CB__STRINGIFY(CB_VERSION_MAJOR) "." CB__STRINGIFY(CB_VERSION_MINOR) "." CB__STRINGIFY(CB_VERSION_PATCH)
-
-// 必须在任何系统头之前定义，否则 -std=c11 下 lstat/readlink/nanosleep/PATH_MAX 不可见。
-// 万一系统头已经先被包含过，底下那段 glibc 兜底声明会补上缺的原型。
-#if !defined(_WIN32)
-#  ifndef _POSIX_C_SOURCE
-#    define _POSIX_C_SOURCE 200809L
-#  endif
-#endif
 
 #ifdef _WIN32
-// 必须在任何头文件之前：否则 MSVC/mingw 会对 fopen/strcpy 等标准函数报警告
+// Must come before any other header, otherwise MSVC/mingw warn about fopen/strcpy and friends.
 #ifndef _CRT_SECURE_NO_WARNINGS
 #define _CRT_SECURE_NO_WARNINGS 1
-#endif // !_CRT_SECURE_NO_WARNINGS
-#endif // _WIN32
+#endif /* _CRT_SECURE_NO_WARNINGS */
+#endif /* _WIN32 */
 
 #include <stdbool.h>
 #include <stdint.h>
 #include <stddef.h>
-#include <stdalign.h> // alignas/alignof：C11 下是宏，C++ 下是关键字
 #include <stdlib.h>
 #include <stdio.h>
 #include <stdarg.h>
@@ -147,18 +80,18 @@
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
-// 裁掉 windows.h 里用不到的部分（旧 MinGW 的惯用技巧），只保留这两个开关。
-// 不能加 _WINCON_：它会裁掉控制台 API（cb_terminal_width 要 GetConsoleScreenBufferInfo、
-// cb.c 要 SetConsoleOutputCP）；也不能加 _WINGDI_：它会裁掉 wingdi.h，而控制台头文件
-// 又依赖里面的 LF_FACESIZE。
+// Trim the parts of windows.h we do not use (the classic MinGW trick): keep these two guards
+// only. _WINCON_ must not be defined, it removes the console API (cb_terminal_width needs
+// GetConsoleScreenBufferInfo, cb.c needs SetConsoleOutputCP). _WINGDI_ must not be defined
+// either: it removes wingdi.h, which the console headers depend on for LF_FACESIZE.
 #define _WINUSER_
 #define _IMM_
-// 顺序很重要：windows.h 必须最先包含，direct.h / io.h / shellapi.h 都依赖它里面的宏。
+// Order matters: windows.h comes first, direct.h / io.h / shellapi.h need its macros.
 #include <windows.h>
 #include <direct.h>
 #include <io.h>
 #include <shellapi.h>
-#include <winioctl.h> // FSCTL_GET_REPARSE_POINT：读取符号链接目标
+#include <winioctl.h> // FSCTL_GET_REPARSE_POINT, used to read symlink targets
 #else
 #ifdef __APPLE__
 #include <mach-o/dyld.h>
@@ -172,8 +105,8 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
-#include <sys/mman.h>  // mmap：大文件零拷贝读取
-#include <sys/ioctl.h> // ioctl(TIOCGWINSZ)：终端宽度
+#include <sys/mman.h>  // mmap, for zero-copy reads of large files
+#include <sys/ioctl.h> // ioctl(TIOCGWINSZ), for the terminal width
 #endif
 
 #ifdef __HAIKU__
@@ -181,69 +114,20 @@
 #endif
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-// POSIX 兜底声明：只在 "glibc + POSIX 被关掉" 这一种情况下生效
-//
-// cb.h 在最顶部定义 _POSIX_C_SOURCE，但 glibc 的 <features.h> 一辈子只处理一次：
-// 用户先包含了 <stdio.h> 之类的系统头时，features.h 早就按"没有 POSIX"处理完了，
-// 之后再定义 _POSIX_C_SOURCE 也来不及——clock_gettime / CLOCK_MONOTONIC / fileno /
-// readlink / symlink / lstat / gmtime_r / setenv / nanosleep 全部变成未声明。
-//
-// 这里在"系统头已经包含完"之后按 <time.h>/<stdio.h> 自己的守门宏逐个补齐缺的原型
-// （重复声明一个已存在的函数在 C++ 下是错误，所以必须逐个判断），
-// 于是 cb.h 不必是第一个被 include。其它平台、其它 libc、以及正常用法下这里一个字都不加。
-#if !defined(_WIN32) && defined(__GLIBC__) && !defined(__USE_XOPEN2K)
-
-#ifdef __cplusplus
-extern "C" {
-#endif
-
-// <stdio.h> 里 fileno 的守门宏是 __USE_POSIX，<time.h> 里 gmtime_r 是 __USE_POSIX
-#  ifndef __USE_POSIX
-extern int fileno(FILE* stream);
-extern struct tm* gmtime_r(const time_t* __restrict timer, struct tm* __restrict result);
-#  endif
-
-// <time.h> 里这两个的守门宏是 __USE_POSIX199309
-#  ifndef __USE_POSIX199309
-#    ifndef CLOCK_MONOTONIC
-#      define CLOCK_MONOTONIC 1 // glibc <time.h> 里的枚举值就是 1
-#    endif
-extern int clock_gettime(clockid_t clock_id, struct timespec* tp);
-extern int nanosleep(const struct timespec* requested_time, struct timespec* remaining);
-#  endif
-
-// 下面四个的守门宏都是 __USE_XOPEN2K，也就是本块的条件本身
-extern int setenv(const char* name, const char* value, int replace);
-extern int lstat(const char* __restrict path, struct stat* __restrict buf);
-extern int symlink(const char* from, const char* to);
-extern ssize_t readlink(const char* __restrict path, char* __restrict buf, size_t len);
-
-#ifdef __cplusplus
-} // extern "C"
-#endif
-
-#endif // !_WIN32 && __GLIBC__ && !__USE_XOPEN2K
-
-// PATH_MAX 在 POSIX 里是可选的（可能压根没定义），用它之前先兜底。
-#ifndef CB_PATH_MAX
-#ifdef PATH_MAX
-#define CB_PATH_MAX PATH_MAX
-#else
-#define CB_PATH_MAX 4096
-#endif // PATH_MAX
-#endif // !CB_PATH_MAX
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
 // General
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-#define CBDEF static inline
+// Goes before every declaration and definition. Define CBDEF as `static inline` when cb.h is
+// used from a single file and you want unused functions dropped by the compiler.
+#ifndef CBDEF
+#define CBDEF
+#endif /* CBDEF */
 
 #ifndef CB_ASSERT
 #include <assert.h>
 #define CB_ASSERT assert
 #endif // !CB_ASSERT
 
-// printf 风格格式串检查（编译期）
+// printf-style format-string checking at compile time.
 #if defined(__GNUC__) || defined(__clang__)
 #ifdef __MINGW_PRINTF_FORMAT
 #define CB_PRINTF_FORMAT(STRING_INDEX, FIRST_TO_CHECK) __attribute__((format(__MINGW_PRINTF_FORMAT, STRING_INDEX, FIRST_TO_CHECK)))
@@ -251,59 +135,79 @@ extern ssize_t readlink(const char* __restrict path, char* __restrict buf, size_
 #define CB_PRINTF_FORMAT(STRING_INDEX, FIRST_TO_CHECK) __attribute__((format(printf, STRING_INDEX, FIRST_TO_CHECK)))
 #endif // __MINGW_PRINTF_FORMAT
 #else
-// MSVC 的 C 模式没有等价的属性，降级为无操作
+// MSVC C mode has no equivalent attribute, so this degrades to nothing.
 #define CB_PRINTF_FORMAT(STRING_INDEX, FIRST_TO_CHECK)
 #endif // __GNUC__ || __clang__
 
-// 给"允许只写一部分字段"的选项结构体补 C++ 默认成员初始化器：cb_walk_dir(root, fn,
-// .post_order = true) 这类写法（还有 cb_cmd_run / cb_chain_*）只写关心的字段，没写的取默认值，
-// 两个语言下都不会触发 -Wmissing-field-initializers / -Wmissing-designated-field-initializers。
-// C 没有这个语法，宏展开成空。
+// C++ default member initializers for option structs, so cb_walk_dir(root, fn, .post_order = true)
+// and cb_cmd_run / cb_chain_* only need the fields you care about without triggering
+// -Wmissing-field-initializers / -Wmissing-designated-field-initializers. Empty in C.
 #ifdef __cplusplus
 #define CB__DEFAULT(value) = value
 #else
 #define CB__DEFAULT(value)
 #endif // __cplusplus
 
-// ---- 全局状态：默认每 TU 一份，可选共享 ----
-//
-// 日志级别、日志处理器、timer、temp 栈、分配统计都是全局状态。
-// 默认（什么都不用定义）：每个 TU 一份 static，零依赖、可单独编译，但多 TU 程序里
-// A.c 设的 cb_minimal_log_level，B.c 看不见。
-//
-// 共享（可选）：
-//   1. 每个 TU 都定义 CB_SHARED_STATE        → 这些变量变成 extern 声明
-//   2. 恰好一个 TU 再定义 CB_SHARED_STATE_IMPL → 那个 TU 给出唯一一份定义
-//      （CB_SHARED_STATE_IMPL 自动蕴含 CB_SHARED_STATE）
-//   例：cc -c a.c -DCB_SHARED_STATE -DCB_SHARED_STATE_IMPL
-//       cc -c b.c -DCB_SHARED_STATE
-//       cc a.o b.o -o app
-//
-// 共享模式的两条限制：
-//   - temp 栈是 _Thread_local 的：共享后是"每线程一份、所有 TU 共用"，跨 TU 的
-//     cb_temp_save/cb_temp_rewind 会互相影响（这正是共享的目的）。
-//   - 静态 inline 函数在 C 里是每个 TU 一份，拿 cb_get_log_handler() 和
-//     &cb_default_log_handler 比指针时跨 TU 可能不相等——共享模式不改变这点。
-#ifdef CB_SHARED_STATE_IMPL
-#ifndef CB_SHARED_STATE
-#define CB_SHARED_STATE
-#endif // !CB_SHARED_STATE
-#endif // CB_SHARED_STATE_IMPL
-
-// 初始化式用 ... 接收：初值里的逗号会被预处理器当成参数分隔符，普通参数接不住。
-#if !defined(CB_SHARED_STATE)
-#define CB__STATE(type, name, ...) static type name = __VA_ARGS__
-#elif defined(CB_SHARED_STATE_IMPL)
-#define CB__STATE(type, name, ...) type name = __VA_ARGS__
+// CB_WARN_DEPRECATED turns the CB_DEPRECATED marker into a real compiler warning.
+#ifdef CB_WARN_DEPRECATED
+#ifndef CB_DEPRECATED
+#if defined(__GNUC__) || defined(__clang__)
+#define CB_DEPRECATED(message) __attribute__((deprecated(message)))
+#elif defined(_MSC_VER)
+#define CB_DEPRECATED(message) __declspec(deprecated(message))
 #else
-#define CB__STATE(type, name, ...) extern type name
+#define CB_DEPRECATED(...)
+#endif
+#endif /* CB_DEPRECATED */
+#else
+#define CB_DEPRECATED(...)
+#endif /* CB_WARN_DEPRECATED */
+
+// Zero initializer: {0} in C, {} in C++; neither triggers -Wmissing-field-initializers.
+#ifdef __cplusplus
+#define CB_ZERO { }
+#else
+#define CB_ZERO { 0 }
+#endif // __cplusplus
+
+// Line ending of the host system, for building text files.
+#ifdef _WIN32
+#define CB_LINE_END "\r\n"
+#else
+#define CB_LINE_END "\n"
 #endif
 
+// Element count of a real array, plus a bounds-checked accessor.
+#define CB_ARRAY_LEN(array) (sizeof(array) / sizeof(array[0]))
+#define CB_ARRAY_GET(array, index) \
+    (CB_ASSERT((size_t)index < CB_ARRAY_LEN(array)), array[(size_t)index])
+
+// Silence an unused parameter or variable warning.
+#define CB_UNUSED(value) (void)(value)
+
+// Jump to the defer: label and store the return value in result. The function needs a variable
+// named result and a defer: label:
+//     bool foo(void)
+//     {
+//         bool result = true;
+//         if (failed) cb_return_defer(false);
+//     defer:
+//         return result;
+//     }
+// In C++ every declaration must appear before the first cb_return_defer(), because goto may not
+// jump over an initialized declaration.
+#define cb_return_defer(value) \
+    do {                       \
+        result = (value);      \
+        goto defer;            \
+    } while (0)
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-// 内存分配收口
+// Allocator
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-// 全库只有 CB_REALLOC / CB_FREE 两个出口，因此替换它们即可接管全部内存行为。
-// CB_REALLOC_RAW / CB_FREE_RAW 是真正的底层，追踪层自身用它，避免递归。
+// CB_REALLOC / CB_FREE are the only two allocation exits of the whole library, so replacing them
+// takes over every allocation. CB_REALLOC_RAW / CB_FREE_RAW are the bottom layer, used by the
+// tracking layer itself to avoid recursion.
 #include <stdlib.h>
 #ifndef CB_REALLOC_RAW
 #define CB_REALLOC_RAW(ptr, size) realloc((ptr), (size))
@@ -313,11 +217,12 @@ extern ssize_t readlink(const char* __restrict path, char* __restrict buf, size_
 #endif // !CB_FREE_RAW
 
 #ifdef CB_ALLOC_TRACK
-// 追踪模式：每次分配带一个内部头，记录大小与调用点，可统计与报告泄漏。
-// 注意：开启后分配的指针不能再传给未开启该模式的模块。
+// Tracking mode: every allocation carries an internal header with its size and call site, so
+// leaks can be counted and reported. Pointers allocated with tracking on must not cross into
+// code compiled with tracking off.
 CBDEF void* cb__tracked_realloc(void* ptr, size_t size, const char* file, int line);
 CBDEF void cb__tracked_free(void* ptr, const char* file, int line);
-// 打印当前存活块、峰值与泄漏清单（含分配点的 文件:行号）
+// Print live blocks, peak usage and the leak list (with the allocation site as file:line).
 CBDEF void cb_alloc_report(void);
 CBDEF size_t cb_alloc_live_count(void);
 CBDEF size_t cb_alloc_live_size(void);
@@ -332,24 +237,23 @@ CBDEF size_t cb_alloc_live_size(void);
 #endif // !CB_FREE
 #endif // CB_ALLOC_TRACK
 
-// OOM：所有"不可恢复"的分配失败都走这里。
-// 刻意不用 assert：assert 会被 -DNDEBUG 关掉，之后 OOM 就成了没有原因的静默崩溃。
-// __FILE__/__LINE__ 展开后是调用点（哪怕隔了多层宏），所以能精确定位。
+// Every unrecoverable allocation failure goes through here. Deliberately not an assert():
+// assert disappears under -DNDEBUG and OOM would become a silent crash with no explanation.
+// __FILE__/__LINE__ expand at the call site, so the location stays exact through macros.
 //
-// 想自己接管（长驻程序里统一走自己的日志/降级逻辑）就在 include 之前顶掉它
-// （它是 #ifndef 守卫的），handler 要先声明：
+// To take over (log and degrade instead of dying), define CB_OOM before including cb.h after
+// declaring your handler; the macro is #ifndef-guarded:
 //
 //     static void my_oom(size_t requested_size);
 //     #define CB_OOM(size) my_oom(size)
 //     #include "cb.h"
 //
-// 之后容器 / arena / temp 的分配失败都会调用 my_oom(size)。注意 CB_OOM 必须
-// "不返回"：分配失败后调用方会继续用那个空指针。
+// The handler must not return: the caller keeps using the (NULL) pointer afterwards.
 #ifndef CB_OOM
 #define CB_OOM(requested_size) cb__oom((requested_size), __FILE__, __LINE__)
 #endif // !CB_OOM
 CBDEF void cb__oom(size_t requested_size, const char* file, int line);
-// 分配后立刻校验：失败即终止。语句宏，紧跟赋值语句使用。
+// Check right after an allocation and die on failure; use it as a statement.
 #define cb_alloc_check(ptr, requested_size) \
     do {                                    \
         if ((ptr) == NULL) CB_OOM(requested_size); \
@@ -368,7 +272,7 @@ CBDEF void cb__oom(size_t requested_size, const char* file, int line);
         b = t;           \
     } while (0)
 
-// 取走当前第一个参数并把指针前移（c_sb）
+// Take the first argument and advance the pointer (bash-like shift).
 #define cb_shift(ptr_data, count) (CB_ASSERT((count) > 0), (count)--, *(ptr_data)++)
 
 #if defined(__cplusplus)
@@ -378,66 +282,155 @@ CBDEF void cb__oom(size_t requested_size, const char* file, int line);
 #endif
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+// Arena / Temp Storage
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// arena: an explicit scoped allocator. Create as many instances as you want; it grows as a chain
+// of regions and never runs "full". temp: a thin wrapper over one thread-local arena instance for
+// throwaway memory. Both share the same core; only the usage model differs (explicit handle vs
+// implicit singleton). CB_TEMP_CAPACITY is the size of the first block, not a total limit: new
+// blocks are appended when it fills up, and cb_temp_alloc never returns NULL (CB_OOM aborts).
+
+#ifndef CB_ARENA_REGION_INIT_CAPACITY
+#define CB_ARENA_REGION_INIT_CAPACITY (64 * 1024)
+#endif // !CB_ARENA_REGION_INIT_CAPACITY
+
+#ifndef CB_TEMP_CAPACITY
+#define CB_TEMP_CAPACITY CB_ARENA_REGION_INIT_CAPACITY
+#endif // !CB_TEMP_CAPACITY
+
+// Largest alignment any standard type needs, without <stdalign.h> (C11 only): a union of the
+// widest scalar types, then offsetof() on a probe struct reads its alignment. Pass CB_ARENA_ALIGN,
+// or any larger power of two, as the alignment argument of cb_arena_alloc_aligned().
+typedef union {
+    long double ld;
+    long long ll;
+    void* p;
+    void (*fp)(void);
+} CB__Max_Align;
+
+typedef struct {
+    char c;
+    CB__Max_Align m;
+} CB__Max_Align_Probe;
+
+#define CB__MAX_ALIGN ((size_t)offsetof(CB__Max_Align_Probe, m))
+
+#ifndef CB_ARENA_ALIGN
+#define CB_ARENA_ALIGN CB__MAX_ALIGN
+#endif // !CB_ARENA_ALIGN
+
+// One temp stack per thread, so threads do not trample each other. Define CB_THREAD_LOCAL
+// yourself to override: empty for a single-threaded program, or your platform's specifier.
+#ifndef CB_THREAD_LOCAL
+#ifdef __cplusplus
+#define CB_THREAD_LOCAL thread_local
+#elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+#define CB_THREAD_LOCAL _Thread_local
+#elif defined(_MSC_VER)
+#define CB_THREAD_LOCAL __declspec(thread)
+#elif defined(__GNUC__) || defined(__clang__)
+#define CB_THREAD_LOCAL __thread
+#else
+#define CB_THREAD_LOCAL
+#endif
+#endif // !CB_THREAD_LOCAL
+
+// data carries no alignment qualifier on purpose: cb_arena_alloc_aligned() rounds absolute
+// addresses up, so every returned pointer is aligned no matter where data starts.
+typedef struct CB_Arena_Region CB_Arena_Region;
+struct CB_Arena_Region {
+    CB_Arena_Region* next;
+    size_t count;                  // bytes used, always a multiple of CB_ARENA_ALIGN
+    size_t capacity;               // usable bytes in this region
+#ifdef __cplusplus
+    // C++ has no flexible array members (-Wpedantic rejects the C99 extension), so use a
+    // one-element array: the data offset is unchanged, see CB__ARENA_REGION_DATA_OFFSET.
+    unsigned char data[1];
+#else
+    unsigned char data[];
+#endif
+};
+
+// Offset of the data area from the start of the region. Use offsetof(), not sizeof(): the C++
+// sizeof includes tail padding, while offsetof equals the C sizeof in both languages.
+#define CB__ARENA_REGION_DATA_OFFSET offsetof(CB_Arena_Region, data)
+
+typedef struct {
+    CB_Arena_Region* begin; // head of the chain
+    CB_Arena_Region* end;   // current allocation region
+    size_t init_capacity;   // first region capacity, 0 means CB_ARENA_REGION_INIT_CAPACITY
+} CB_Arena;
+
+// Snapshot of (region, offset inside it): rewind is O(1) and can span several regions.
+typedef struct {
+    CB_Arena_Region* region;
+    size_t count;
+} CB_Arena_Mark;
+
+// ---- declarations ----
+CBDEF void cb__oom(size_t requested_size, const char* file, int line);
+
+CBDEF void* cb_arena_alloc(CB_Arena* a, size_t size);
+// alignment must be a power of two.
+CBDEF void* cb_arena_alloc_aligned(CB_Arena* a, size_t size, size_t alignment);
+// The arena cannot grow in place: when new_size > old_size it allocates and copies, so the
+// returned pointer may differ from old_ptr.
+CBDEF void* cb_arena_realloc(CB_Arena* a, void* old_ptr, size_t old_size, size_t new_size);
+CBDEF char* cb_arena_strdup(CB_Arena* a, const char* cstr);
+CBDEF char* cb_arena_strndup(CB_Arena* a, const char* cstr, size_t n);
+CBDEF char* cb_arena_sprintf(CB_Arena* a, const char* fmt, ...) CB_PRINTF_FORMAT(2, 3);
+CBDEF char* cb_arena_vsprintf(CB_Arena* a, const char* fmt, va_list ap);
+CBDEF CB_Arena_Mark cb_arena_save(CB_Arena* a);
+CBDEF void cb_arena_rewind(CB_Arena* a, CB_Arena_Mark mark);
+// Drop the contents but keep the regions for reuse (the usual way to reuse an arena).
+CBDEF void cb_arena_reset(CB_Arena* a);
+// Give every region back to the system.
+CBDEF void cb_arena_free(CB_Arena* a);
+
+CBDEF void* cb_temp_alloc(size_t size);
+CBDEF char* cb_temp_strdup(const char* cstr);
+CBDEF char* cb_temp_strndup(const char* cstr, size_t n);
+CBDEF char* cb_temp_sprintf(const char* fmt, ...) CB_PRINTF_FORMAT(1, 2);
+CBDEF char* cb_temp_vsprintf(const char* fmt, va_list ap);
+// Reset the whole temp stack, keeping the allocated regions.
+CBDEF void cb_temp_reset(void);
+// Save a checkpoint: CB_Arena_Mark mark = cb_temp_save(); ... cb_temp_rewind(mark);
+CBDEF CB_Arena_Mark cb_temp_save(void);
+// Return to the checkpoint; every allocation made after it becomes invalid.
+CBDEF void cb_temp_rewind(CB_Arena_Mark mark);
+
+#ifdef CB_ALLOC_TRACK
+// Tracking layer: every allocation gets a record header in front of it. The CB__Max_Align member
+// raises the struct alignment, so sizeof is a multiple of it and the pointer returned to the user
+// stays aligned like a plain malloc() result.
+typedef struct CB__Alloc_Record {
+    struct CB__Alloc_Record* prev;
+    struct CB__Alloc_Record* next;
+    CB__Max_Align align_guard;
+    size_t size;
+    const char* file;
+    int line;
+} CB__Alloc_Record;
+
+extern CB__Alloc_Record* cb__alloc_head;
+extern size_t cb__alloc_live_count;
+extern size_t cb__alloc_live_size;
+extern size_t cb__alloc_peak_size;
+extern size_t cb__alloc_total_count;
+#endif // CB_ALLOC_TRACK
+
+// temp is one thread-local arena instance, defined once in the implementation region
+extern CB_THREAD_LOCAL CB_Arena cb__temp_arena;
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
 // Logger / Panic
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-#ifdef CB_WARN_DEPRECATED
-#ifndef CB_DEPRECATED
-#if defined(__GNUC__) || defined(__clang__)
-#define CB_DEPRECATED(message) __attribute__((deprecated(message)))
-#elif defined(_MSC_VER)
-#define CB_DEPRECATED(message) __declspec(deprecated(message))
-#else
-#define CB_DEPRECATED(...)
-#endif
-#endif /* CB_DEPRECATED */
-#else
-#define CB_DEPRECATED(...)
-#endif /* CB_WARN_DEPRECATED */
-
-// 零初始化：C 用 {0}，C++ 用 {}，两边都不触发 -Wmissing-field-initializers。
-#ifdef __cplusplus
-#define CB_ZERO { }
-#else
-#define CB_ZERO { 0 }
-#endif // __cplusplus
 
 
-// 例：char str1[] = "hello"; sizeof(str1) = 6，CB_ARRAY_LEN(str1) = 6
-#define CB_ARRAY_LEN(array) (sizeof(array) / sizeof(array[0]))
-#define CB_ARRAY_GET(array, index) \
-    (CB_ASSERT((size_t)index < CB_ARRAY_LEN(array)), array[(size_t)index])
-
-// 消除“未使用参数”告警
-#define CB_UNUSED(value) (void)(value)
-
-// 跳到函数末尾的 defer: 标签并把返回值写进 result。
-//
-// 使用约定（两条都必须满足，否则编译不过）：
-//   1. 当前作用域里要有一个名为 result 的变量
-//   2. 函数里要有一个 defer: 标签
-// 典型写法：
-//     bool foo(void)
-//     {
-//         bool result = true;
-//         ...
-//         if (失败) cb_return_defer(false);
-//     defer:
-//         ...清理...
-//         return result;
-//     }
-//
-// C++ 下 goto 不能跳过带初始化的变量声明，所以变量声明都要写在第一个 cb_return_defer 之前。
-#define cb_return_defer(value) \
-    do {                       \
-        result = (value);      \
-        goto defer;            \
-    } while (0)
-
-
-// 日志分两级用法：
-//   cb_log(level, ...)      库内部与一般用途：不带位置，输出干净
-//   CB_LOG_AT(level, ...)   你自己的代码里用：自动带上 文件:行号
-// 例：CB_LOG_AT(CB_ERROR, "配置解析失败") → [ERROR] mycode.c:42: 配置解析失败
+// Two ways to log:
+//     cb_log(level, ...)     library-internal and general use: no location, clean output
+//     CB_LOG_AT(level, ...)  your own code: adds file:line automatically
+// CB_LOG_AT(CB_ERROR, "bad config") -> [ERROR] mycode.c:42: bad config
 
 typedef enum {
     CB_INFO,
@@ -446,18 +439,18 @@ typedef enum {
     CB_NO_LOGS,
 } CB_Log_Level;
 
-// 日志处理器。file 为 NULL（line 为 0）表示"无位置信息"，处理器自行决定是否打印。
+// Log handler. file == NULL (line == 0) means "no location"; the handler decides what to print.
 typedef void(CB_Log_Handler)(CB_Log_Level level, const char* file, int line, const char* fmt, va_list args);
 
-CB__STATE(CB_Log_Level, cb_minimal_log_level, CB_INFO);
+extern CB_Log_Level cb_minimal_log_level;
 
 CBDEF CB_Log_Handler cb_default_log_handler;
 CBDEF CB_Log_Handler cb_cancer_log_handler;
 CBDEF CB_Log_Handler cb_null_log_handler;
-CB__STATE(CB_Log_Handler*, cb_log_handler, &cb_default_log_handler);
+extern CB_Log_Handler* cb_log_handler;
 
 CBDEF void cb_log(CB_Log_Level level, const char* fmt, ...);
-// 带位置的日志。一般用下面的 CB_LOG_AT 宏，不要手写 file/line。
+// Log with a location; normally use the CB_LOG_AT macro instead of writing file/line by hand.
 CBDEF void cb_log_at(CB_Log_Level level, const char* file, int line, const char* fmt, ...);
 #define CB_LOG_AT(level, ...) cb_log_at((level), __FILE__, __LINE__, __VA_ARGS__)
 
@@ -467,11 +460,11 @@ CBDEF void cb_default_log_handler(CB_Log_Level level, const char* file, int line
 CBDEF void cb_cancer_log_handler(CB_Log_Level level, const char* file, int line, const char* fmt, va_list args);
 CBDEF void cb_null_log_handler(CB_Log_Level level, const char* file, int line, const char* fmt, va_list args);
 
-// panic：打印 文件:行号 + 标签 + 消息，然后 abort。
-// Linux(glibc) 下额外打印调用栈：加 -rdynamic 才有函数名，否则只有地址（可用 addr2line 还原）；
-// 定义 CB_PANIC_BACKTRACE=0 可关闭。
+// panic: print file:line + label + message, then abort. On glibc/Mac/FreeBSD a backtrace is
+// printed as well (function names need -rdynamic, otherwise feed the addresses to addr2line);
+// CB_PANIC_BACKTRACE=0 disables it. FreeBSD additionally needs -lexecinfo.
 #ifndef CB_PANIC_BACKTRACE
-#if defined(__linux__) && defined(__GLIBC__) && !defined(_WIN32)
+#if (defined(__GLIBC__) || defined(__APPLE__) || defined(__FreeBSD__)) && !defined(_WIN32)
 #define CB_PANIC_BACKTRACE 1
 #else
 #define CB_PANIC_BACKTRACE 0
@@ -486,125 +479,24 @@ CBDEF void cb__panicf(const char* file, int line, const char* label, const char*
 #define CB_TODO(...) cb__panicf(__FILE__, __LINE__, "TODO", __VA_ARGS__)
 #define CB_UNREACHABLE(...) cb__panicf(__FILE__, __LINE__, "UNREACHABLE", __VA_ARGS__)
 
-// ---- 定义 ----
-CBDEF void cb__panicf(const char* file, int line, const char* label, const char* format, ...)
-{
-    fprintf(stderr, "%s:%d: %s: ", file, line, label);
-    va_list args;
-    va_start(args, format);
-    vfprintf(stderr, format, args);
-    va_end(args);
-    fprintf(stderr, "\n");
-
-#if CB_PANIC_BACKTRACE
-    {
-        void* frames[32];
-        int count = backtrace(frames, (int)CB_ARRAY_LEN(frames));
-        fprintf(stderr, "--- backtrace (%d frames) ---\n", count);
-        backtrace_symbols_fd(frames, count, 2); // 2 = STDERR_FILENO，避免为它引入 unistd.h
-    }
-#endif // CB_PANIC_BACKTRACE
-
-    abort();
-}
-
-CBDEF void cb_log(CB_Log_Level level, const char* fmt, ...)
-{
-    va_list args;
-    va_start(args, fmt);
-    cb_log_handler(level, NULL, 0, fmt, args);
-    va_end(args);
-}
-
-CBDEF void cb_log_at(CB_Log_Level level, const char* file, int line, const char* fmt, ...)
-{
-    va_list args;
-    va_start(args, fmt);
-    cb_log_handler(level, file, line, fmt, args);
-    va_end(args);
-}
-
-CBDEF void cb_set_log_handler(CB_Log_Handler* handler)
-{
-    cb_log_handler = handler;
-}
-
-CBDEF CB_Log_Handler* cb_get_log_handler(void)
-{
-    return cb_log_handler;
-}
-
-CBDEF void cb_default_log_handler(CB_Log_Level level, const char* file, int line, const char* fmt, va_list args)
-{
-    if (level < cb_minimal_log_level) return;
-
-    switch (level) {
-    case CB_INFO:
-        fprintf(stderr, "[INFO] ");
-        break;
-    case CB_WARN:
-        fprintf(stderr, "[WARN] ");
-        break;
-    case CB_ERROR:
-        fprintf(stderr, "[ERROR] ");
-        break;
-    case CB_NO_LOGS:
-        return;
-    default:
-        CB_UNREACHABLE("CB_Log_Level");
-    }
-
-    if (file != NULL) fprintf(stderr, "%s:%d: ", file, line);
-    vfprintf(stderr, fmt, args);
-    fprintf(stderr, "\n");
-}
-
-CBDEF void cb_cancer_log_handler(CB_Log_Level level, const char* file, int line, const char* fmt, va_list args)
-{
-    switch (level) {
-    case CB_INFO:
-        fprintf(stderr, "ℹ️ \x1b[36m[INFO]\x1b[0m ");
-        break;
-    case CB_WARN:
-        fprintf(stderr, "⚠️ \x1b[33m[WARN]\x1b[0m ");
-        break;
-    case CB_ERROR:
-        fprintf(stderr, "🚨 \x1b[31m[ERROR]\x1b[0m ");
-        break;
-    case CB_NO_LOGS:
-        return;
-    default:
-        CB_UNREACHABLE("CB_Log_Level");
-    }
-
-    if (file != NULL) fprintf(stderr, "%s:%d: ", file, line);
-    vfprintf(stderr, fmt, args);
-    fprintf(stderr, "\n");
-}
-
-CBDEF void cb_null_log_handler(CB_Log_Level level, const char* file, int line, const char* fmt, va_list args)
-{
-    CB_UNUSED(level);
-    CB_UNUSED(file);
-    CB_UNUSED(line);
-    CB_UNUSED(fmt);
-    CB_UNUSED(args);
-}
-
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // Timer
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-// 用法：
-//     CB_TIMER_START("phase");  ...被测代码...  double us = CB_TIMER_END();
-//     cb_timer_end_print();   打印这一条
-//     cb_timer_end_stat();    取耗时并累加到同名统计项
-//     cb_timer_print_stats(); 打印统计表
+// Usage:
+//     CB_TIMER_START("phase");  ...work...  double us = CB_TIMER_END();
+//     cb_timer_end_print();   print this one measurement
+//     cb_timer_end_stat();    add it to the stat entry with the same name
+//     cb_timer_print_stats(); print the whole table
 //
-// 时间源：Windows 用 QueryPerformanceCounter，其余平台用 clock_gettime(CLOCK_MONOTONIC)。
-// 统计表按需增长，不会因为计时名变多而丢数据。
-// 输出一律走 stderr——计时是诊断信息，混进 stdout 会污染程序正常输出与回归测试基线。
+// Time source: QueryPerformanceCounter on Windows, clock_gettime(CLOCK_MONOTONIC) elsewhere.
+// The stats table grows on demand, so more timer names never lose data.
+// Everything goes to stderr: timing is diagnostics and would pollute stdout and recorded
+// test baselines.
 
-// 嵌套深度上限。这不是统计条目上限：统计表按需增长，不会丢数据。
+// Nanoseconds per second, for turning clock ticks into a duration.
+#define CB_NANOS_PER_SEC 1000000000ull
+
+// Nesting depth limit. This is not a limit on stat entries: the table grows on demand.
 #ifndef CB_TIMER_MAX_DEPTH
 #define CB_TIMER_MAX_DEPTH 64
 #endif // !CB_TIMER_MAX_DEPTH
@@ -623,308 +515,1195 @@ typedef struct {
 } CB_Timer_Frame;
 
 typedef struct {
-    CB_Timer_Stat* stats; // 动态数组（items/count/capacity 三件套）
+    CB_Timer_Stat* stats; // dynamic array (items/count/capacity)
     size_t stats_count;
     size_t stats_capacity;
     CB_Timer_Frame stack[CB_TIMER_MAX_DEPTH];
     size_t sp;
 } CB_Timer;
 
-CB__STATE(CB_Timer, cb_timer, CB_ZERO);
+extern CB_Timer cb_timer;
 
-// ---- 声明 ----
+// ---- declarations ----
 CBDEF double cb_get_time_ms(void);
 CBDEF double cb_get_time_us(void);
+// Nanoseconds from a monotonic clock; only differences between two stamps are meaningful.
+CBDEF uint64_t cb_nanos_since_unspecified_epoch(void);
 
 CBDEF void cb_timer_begin(const char* name);
-// 结束当前计时并返回耗时（微秒）
+// End the current measurement and return the elapsed microseconds.
 CBDEF double cb_timer_end(void);
-// 结束当前计时、返回耗时，并累加到同名统计项
+// End the current measurement and add it to the stat entry with the same name.
 CBDEF double cb_timer_end_stat(void);
-// 结束当前计时并把这一条打印到 stderr
+// End the current measurement and print this one entry to stderr.
 CBDEF void cb_timer_end_print(void);
-// 找到（或新建）同名统计项；不会返回 NULL（统计表满了会自动扩容）
+// Find or create the stat entry with this name; never returns NULL.
 CBDEF CB_Timer_Stat* cb_timer_get_stat(const char* name);
-// 打印统计表到指定流（基准测试用它打到 stdout，便于重定向保存）
+// Print the table to a stream (benchmarks use stdout so it can be redirected).
 CBDEF void cb_timer_fprint_stats(FILE* out);
-// 打印统计表到 stderr（默认；计时是诊断信息）
+// Print the table to stderr (the default: timing is diagnostics).
 CBDEF void cb_timer_print_stats(void);
-// 清空统计表与计时栈（已分配的统计表内存保留复用）
+// Clear stats and the timer stack, keeping the allocated table for reuse.
 CBDEF void cb_timer_reset(void);
 
-// 只有最常用的这两个保留短名字（CB_TIMER_START / CB_TIMER_END），其余直接用函数名
+// Only these two keep short macro names; everything else uses the function directly.
 #define CB_TIMER_START(timer_name) cb_timer_begin(timer_name)
 #define CB_TIMER_END() cb_timer_end()
 
-// ---- 定义 ----
-#ifdef _WIN32
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// Dynamic Array
+////////////////////////////////////////////////////////////////////////////////////////////////////
+typedef struct {
+    const char** items;
+    size_t count;
+    size_t capacity;
+} CB_DArray;
 
-// 注意：Windows 下 cb_get_time_us 约 53ns/次，比 Linux 的 22ns 慢一倍多，
-// 那是 QueryPerformanceCounter 本身的代价。
-CBDEF double cb_get_time_ms(void)
-{
-    LARGE_INTEGER freq, count;
-    QueryPerformanceFrequency(&freq);
-    QueryPerformanceCounter(&count);
-    return (double)count.QuadPart * 1000 / freq.QuadPart;
-}
-CBDEF double cb_get_time_us(void)
-{
-    LARGE_INTEGER freq, count;
-    QueryPerformanceFrequency(&freq);
-    QueryPerformanceCounter(&count);
-    return (double)count.QuadPart * 1000000 / freq.QuadPart;
-}
+#ifndef CB_DA_INIT_CAP
+#define CB_DA_INIT_CAP 256
+#endif // !CB_DA_INIT_CAP
+
+#define cb_da_free(da) CB_FREE((da).items)
+
+#define cb_da_reserve(da, new_capacity)                                                                                 \
+    do {                                                                                                                \
+        if ((new_capacity) > (da)->capacity) {                                                                          \
+            if ((da)->capacity == 0)                                                                                    \
+                (da)->capacity = CB_DA_INIT_CAP;                                                                        \
+            while ((new_capacity) > (da)->capacity) {                                                                   \
+                (da)->capacity *= 2;                                                                                    \
+            }                                                                                                           \
+            (da)->items = CB_DECLTYPE_CAST((da)->items) CB_REALLOC((da)->items, (da)->capacity * sizeof(*(da)->items)); \
+            cb_alloc_check((da)->items, (da)->capacity * sizeof(*(da)->items));                                        \
+        }                                                                                                               \
+    } while (0)
+
+#define cb_da_append(da, data)                \
+    do {                                      \
+        cb_da_reserve((da), (da)->count + 1); \
+        (da)->items[(da)->count++] = (data);  \
+    } while (0)
+
+
+#define cb_da_append_many(da, new_items, new_items_count)                                                \
+    do {                                                                                                 \
+        size_t cb__n = (size_t)(new_items_count);                                                        \
+        /* n == 0 allows new_items to be NULL, so skip the whole append (memcpy from NULL is UB)    */   \
+        if (cb__n > 0) {                                                                                 \
+            const char* cb__src = (const char*)(new_items);                                              \
+            /* Self-append: the source sits inside the target buffer, realloc invalidates it and the  */ \
+            /* ranges overlap, so remember the offset and then use memmove                            */ \
+            bool cb__self = (da)->items != NULL &&                                                       \
+                            cb__src >= (const char*)(da)->items &&                                       \
+                            cb__src < (const char*)(da)->items + (da)->count * sizeof(*(da)->items);     \
+            size_t cb__off = cb__self ? (size_t)(cb__src - (const char*)(da)->items) : 0;                \
+            cb_da_reserve((da), (da)->count + cb__n);                                                    \
+            if (cb__self) cb__src = (const char*)(da)->items + cb__off;                                  \
+            memmove((da)->items + (da)->count, cb__src, cb__n * sizeof(*(da)->items));                   \
+            (da)->count += cb__n;                                                                        \
+        }                                                                                                \
+    } while (0)
+
+#define cb_da_resize(da, new_size)     \
+    do {                               \
+        cb_da_reserve((da), new_size); \
+        (da)->count = (new_size);      \
+    } while (0)
+
+#define cb_da_pop(da) (da)->items[(CB_ASSERT((da)->count > 0), --(da)->count)]
+#define cb_da_first(da) (da)->items[(CB_ASSERT((da)->count > 0), 0)]
+#define cb_da_last(da) (da)->items[(CB_ASSERT((da)->count > 0), (da)->count - 1)]
+// Overwrite the removed element with the last one (order is not preserved).
+#define cb_da_remove_unordered(da, i)                \
+    do {                                             \
+        size_t j = (i);                              \
+        CB_ASSERT(j < (da)->count);                  \
+        (da)->items[j] = (da)->items[--(da)->count]; \
+    } while (0)
+
+#define cb_da_foreach(Type, it, da) \
+    for (Type* it = (da)->items; it < (da)->items + (da)->count; ++it)
+
+// Drop the contents but keep the allocated memory for reuse.
+#define cb_da_clear(da) ((da)->count = 0)
+
+// Insert one element at index, shifting the tail right.
+#define cb_da_insert(da, index, data)                                      \
+    do {                                                                   \
+        size_t cb__i = (index);                                            \
+        CB_ASSERT(cb__i <= (da)->count);                                    \
+        cb_da_reserve((da), (da)->count + 1);                               \
+        memmove((da)->items + cb__i + 1, (da)->items + cb__i,               \
+                ((da)->count - cb__i) * sizeof(*(da)->items));               \
+        (da)->items[cb__i] = (data);                                        \
+        (da)->count += 1;                                                   \
+    } while (0)
+
+// Remove in order, keeping the relative order of the rest. Use cb_da_remove_unordered when\n// the elements are large and their order does not matter.
+#define cb_da_remove_ordered(da, index)                                    \
+    do {                                                                   \
+        size_t cb__i = (index);                                            \
+        CB_ASSERT(cb__i < (da)->count);                                     \
+        memmove((da)->items + cb__i, (da)->items + cb__i + 1,               \
+                ((da)->count - cb__i - 1) * sizeof(*(da)->items));           \
+        (da)->count -= 1;                                                   \
+    } while (0)
+
+// Iterate backwards; with count == 0 it starts at items, so no items-1 pointer arithmetic.
+#define cb_da_foreach_rev(Type, it, da)                                    \
+    for (Type* it = ((da)->count > 0 ? (da)->items + (da)->count - 1 : (da)->items); \
+         (da)->count > 0 && it >= (da)->items; --it)
+
+// Append to a fixed-capacity inline array ({ T items[N]; size_t count; }): no allocation, no
+// growth, and a full array is a bug rather than something to silently drop an item over.
+#define cb_fa_append(fa, item) \
+    (CB_ASSERT((fa)->count < CB_ARRAY_LEN((fa)->items)), (fa)->items[(fa)->count++] = (item))
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// Bitset
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// Fixed-size bit set: bits is the number of bits, the storage is uint64_t words and grows on demand.
+
+typedef struct {
+    uint64_t* words;
+    size_t word_count;
+    size_t word_capacity;
+    size_t bits;
+} CB_Bitset;
+
+#ifndef CB_BITSET_WORD_BITS
+#define CB_BITSET_WORD_BITS 64
+#endif // !CB_BITSET_WORD_BITS
+
+// ---- declarations ----
+// Resize to bits: new bits read as 0, bits above the new size are dropped.
+CBDEF void cb_bitset_resize(CB_Bitset* bs, size_t bits);
+CBDEF void cb_bitset_set(CB_Bitset* bs, size_t index);
+CBDEF void cb_bitset_unset(CB_Bitset* bs, size_t index);
+CBDEF void cb_bitset_toggle(CB_Bitset* bs, size_t index);
+CBDEF bool cb_bitset_test(const CB_Bitset* bs, size_t index);
+// Clear every bit, keeping the allocated words.
+CBDEF void cb_bitset_clear_all(CB_Bitset* bs);
+// Count the bits whose value equals target.
+CBDEF size_t cb_bitset_count(const CB_Bitset* bs, bool target);
+// Index of the first bit equal to target, or (size_t)-1 when there is none.
+CBDEF size_t cb_bitset_find(const CB_Bitset* bs, bool target);
+CBDEF void cb_bitset_free(CB_Bitset* bs);
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// Ring Buffer
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// Byte ring buffer, FIFO. The capacity is fixed and never grows: a full ring accepts what fits\n// and returns the number of bytes actually written.
+
+typedef struct {
+    unsigned char* data;
+    size_t capacity;
+    size_t read_pos;
+    size_t write_pos;
+    size_t count; // bytes currently readable
+} CB_Ring;
+
+// ---- declarations ----
+CBDEF bool cb_ring_init(CB_Ring* ring, size_t capacity);
+CBDEF void cb_ring_free(CB_Ring* ring);
+// How many bytes can still be written.
+CBDEF size_t cb_ring_space(const CB_Ring* ring);
+// Write and return the number of bytes actually written.
+CBDEF size_t cb_ring_write(CB_Ring* ring, const void* data, size_t size);
+// Read and return the number of bytes actually read.
+CBDEF size_t cb_ring_read(CB_Ring* ring, void* out, size_t size);
+// Copy without consuming and return the number of bytes copied.
+CBDEF size_t cb_ring_peek(const CB_Ring* ring, void* out, size_t size);
+// Drop all data without freeing the buffer.
+CBDEF void cb_ring_clear(CB_Ring* ring);
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// Sort
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// Works on any {items,count,capacity} dynamic array.
+// cb_da_sort uses qsort: fast, but not stable (equal elements may be reordered).
+// cb_da_sort_insertion is stable and very fast on nearly sorted arrays; best for small ones.
+
+typedef int (*CB_Compare_Func)(const void* a, const void* b);
+
+// ---- declarations ----
+// Stable insertion sort. It takes the element size so it can move elements byte-wise.
+CBDEF void cb__insertion_sort(void* items, size_t count, size_t elem_size, CB_Compare_Func cmp);
+
+#define cb_da_sort(da, cmp) qsort((da)->items, (da)->count, sizeof(*(da)->items), (cmp))
+#define cb_da_sort_insertion(da, cmp) \
+    cb__insertion_sort((da)->items, (da)->count, sizeof(*(da)->items), (cmp))
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// StringBuilder
+////////////////////////////////////////////////////////////////////////////////////////////////////
+typedef struct {
+    char* items;
+    size_t count;
+    size_t capacity;
+} CB_String_Builder;
+
+// Core invariant: items is always a valid C string. Every append writes '\0' at items[count] and
+// the capacity counts that terminator (count does not), so cb_sb_to_sv / printf("%s") / strstr stay
+// safe at any moment. To put a '\0' inside the payload use cb_sb_append(&sb, '\0') explicitly:
+// that byte is content, not the terminator.
+CBDEF void cb__sb_terminate(CB_String_Builder* sb);
+
+// TODO: may need to add a buffer version, more safe for memory.
+CBDEF bool cb_read_entire_file(const char* path, CB_String_Builder* sb);
+CBDEF int cb_sb_appendf(CB_String_Builder* sb, const char* fmt, ...) CB_PRINTF_FORMAT(2, 3);
+// Pad the builder with 0 bytes up to a multiple of word_size (when building binary formats):
+// content "aaaaa" aligned to 4 becomes "aaaaa000".
+CBDEF void cb_sb_pad_align(CB_String_Builder* sb, size_t size);
+
+// Append a fixed-size buffer.
+#define cb_sb_append_buf(sb, buf, size)         \
+    do {                                        \
+        cb_da_append_many((sb), (buf), (size)); \
+        cb__sb_terminate(sb);                   \
+    } while (0)
+
+// Append a StringView.
+#define cb_sb_append_sv(sb, sv) cb_sb_append_buf((sb), (sv).data, (sv).count)
+
+// Append a NUL-terminated string.
+#define cb_sb_append_cstr(sb, cstr)                    \
+    do {                                               \
+        const char* cb__s = (cstr);                    \
+        cb_sb_append_buf((sb), cb__s, strlen(cb__s));  \
+    } while (0)
+
+// Append a single character.
+#define cb_sb_append(sb, ch)                 \
+    do {                                     \
+        char cb__ch = (char)(ch);            \
+        cb_sb_append_buf((sb), &cb__ch, 1);  \
+    } while (0)
+
+// Append a NUL byte to the payload (nob.h compatibility). cb.h keeps items NUL-terminated by
+// itself, so this is only needed when the NUL is part of the data, not to terminate a string.
+#define cb_sb_append_null(sb) cb_sb_append((sb), '\0')
+
+// Free the memory and zero the fields, so no dangling pointer is left behind.
+#define cb_sb_free(sb)          \
+    do {                        \
+        CB_FREE((sb).items);    \
+        (sb).items = NULL;      \
+        (sb).count = 0;         \
+        (sb).capacity = 0;      \
+    } while (0)
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// StringView
+////////////////////////////////////////////////////////////////////////////////////////////////////
+typedef struct {
+    const char* data;
+    size_t count;
+} CB_String_View;
+
+// Macros for printing a StringView with printf.
+#ifndef CB_SV_FMT
+// Compile-time StringView literal: it saves the strlen that cb_sv_from_cstr("...") would do.
+// The designators must follow the declaration order of CB_String_View (data first, count second):
+// C allows any order, C++ is a hard error ("designator order for field does not match...").
+#define CB_SVLIT(lit) (CB_CLIT(CB_String_View){.data = (lit), .count = sizeof(lit) - 1})
+// Static-initializer form, for MSVC /TC which rejects the compound literal above.
+#define CB_SVLIT_STATIC(lit) {.data = (lit), .count = sizeof(lit) - 1}
+
+#define CB_SV_FMT "%.*s"
+#endif // CB_SV_FMT
+#ifndef CB_SV_ARG
+#define CB_SV_ARG(sv) (int)(sv).count, (sv).data
+#endif // CB_SV_ARG
+// USAGE:
+//   CB_String_View name = ...;
+//   printf("Name: "CB_SV_FMT"\n", CB_SV_ARG(name));
+
+// Copy the StringView into temp storage as a NUL-terminated C string.
+CBDEF const char* cb_sv_to_temp_cstr(CB_String_View sv);
+
+CBDEF bool cb_sv_eq(CB_String_View a, CB_String_View b);
+
+CBDEF CB_String_View cb_sv_from_parts(const char* data, size_t count);
+CBDEF CB_String_View cb_sv_from_cstr(const char* cstr);
+
+// View a StringBuilder as a StringView.
+#define cb_sb_to_sv(sb) cb_sv_from_parts((sb).items, (sb).count)
+
+// Chop while p(current character) is true: return the chopped prefix, move sv forward.
+//     CB_String_View sv = cb_sv_from_cstr("  123abc456");
+//     cb_sv_chop_by_func(&sv, isspace) -> "  ", sv = "123abc456"
+//     cb_sv_chop_by_func(&sv, isdigit) -> "123", sv = "abc456"
+// Move the view forward. An empty view may have data == NULL, and NULL + 0 is UB in C
+// (UBSan: "applying zero offset to null pointer"), so n == 0 returns early.
+#define cb__sv_advance(sv, n)  \
+    do {                       \
+        if ((n) > 0) {         \
+            (sv)->data += (n); \
+            (sv)->count -= (n);\
+        }                      \
+    } while (0)
+
+CBDEF CB_String_View cb_sv_chop_by_func(CB_String_View* sv, int (*p)(int x));
+// Chop up to delim, return that part and drop the delimiter itself.
+//     CB_String_View sv = cb_sv_from_cstr("  1223abc456");
+//     cb_sv_chop_by_delim(&sv, '2') -> "  1", sv = "23abc456"
+CBDEF CB_String_View cb_sv_chop_by_delim(CB_String_View* sv, char delim);
+CBDEF CB_String_View cb_sv_chop_by_delim_r(CB_String_View* sv, char delim);
+CBDEF CB_String_View cb_sv_chop_left(CB_String_View* sv, size_t n);
+CBDEF CB_String_View cb_sv_chop_right(CB_String_View* sv, size_t n);
+
+// True when the view has this prefix/suffix, false otherwise.
+CBDEF bool cb_sv_ends_with(CB_String_View sv, CB_String_View suffix);
+CBDEF bool cb_sv_ends_with_cstr(CB_String_View sv, const char* suffix);
+CBDEF bool cb_sv_starts_with(CB_String_View sv, CB_String_View prefix);
+CBDEF bool cb_sv_starts_with_cstr(CB_String_View sv, const char* prefix);
+
+// Chop the prefix if present and return true, otherwise return false.
+CBDEF bool cb_sv_chop_prefix(CB_String_View* sv, CB_String_View prefix);
+// Chop the suffix if present and return true, otherwise return false.
+CBDEF bool cb_sv_chop_suffix(CB_String_View* sv, CB_String_View suffix);
+
+// Return a view without leading/trailing whitespace; the original view is not modified.
+CBDEF CB_String_View cb_sv_trim_left(CB_String_View sv);
+CBDEF CB_String_View cb_sv_trim_right(CB_String_View sv);
+CBDEF CB_String_View cb_sv_trim(CB_String_View sv);
+
+CBDEF int cb_sv_find(CB_String_View* sv, char ch);
+CBDEF int cb_sv_find_sv(CB_String_View* sv, CB_String_View target, size_t start_offset);
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// UTF-8 Support
+////////////////////////////////////////////////////////////////////////////////////////////////////
+extern const uint8_t cb_bytes_for_utf8[];
+
+CBDEF size_t cb_sv_utf8_len(CB_String_View sv, size_t* bytes_overrun);
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// StringView Tools
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// ---- declarations ----
+// Case conversion; the result lives in temp storage.
+CBDEF char* cb_sv_to_temp_upper(CB_String_View sv);
+CBDEF char* cb_sv_to_temp_lower(CB_String_View sv);
+CBDEF bool cb_sv_eq_ignore_case(CB_String_View a, CB_String_View b);
+
+// Number parsing is strict and allows surrounding whitespace: on success it writes *out and returns
+// true, on failure it returns false and leaves *out untouched. 0x/0X hex, 0b/0B binary and 0o/0O
+// octal prefixes are accepted; integers take no decimal point and no exponent.
+CBDEF bool cb_sv_to_i64(CB_String_View sv, int64_t* out);
+CBDEF bool cb_sv_to_u64(CB_String_View sv, uint64_t* out);
+CBDEF bool cb_sv_to_f64(CB_String_View sv, double* out);
+
+// Take the next delim-separated field; sv is consumed in place.
+//     while (cb_sv_split_next(&sv, ',', &part)) { ... }
+CBDEF bool cb_sv_split_next(CB_String_View* sv, char delim, CB_String_View* out);
+// Append parts joined by sep to sb (no trailing separator).
+CBDEF void cb_sb_append_join(CB_String_Builder* sb, const CB_String_View* parts, size_t count, CB_String_View sep);
+
+// UTF-8: decode one code point.
+CBDEF bool cb_utf8_decode(const char* data, size_t size, uint32_t* out_codepoint, size_t* out_length);
+// Encode one code point into out (at least 4 bytes) and return the length; 0 when invalid.
+CBDEF size_t cb_utf8_encode(uint32_t codepoint, char out[4]);
+// Take one code point from the head of sv and move sv forward.
+CBDEF bool cb_sv_utf8_next(CB_String_View* sv, uint32_t* out_codepoint);
+// Validate the view as UTF-8; on failure out_bad_offset receives the offending index.
+CBDEF bool cb_utf8_validate(CB_String_View sv, size_t* out_bad_offset);
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// HashMap
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// Open addressing with linear probing. Keys are copied into the map, so the caller does not have
+//
+// Storage backends:
+//   - CB_REALLOC / CB_FREE by default
+//   - after cb_map_init_arena(&m, &arena, n) every allocation comes from the arena.
+//     The arena cannot free single blocks, so slot arrays abandoned by a rehash live until
+//
+// Usage:
+//   CB_Map m = CB_ZERO;
+//   cb_map_put_cstr(&m, "answer", (void*)(intptr_t)42);
+//   void* v = NULL;
+//   if (cb_map_get_cstr(&m, "answer", &v)) { ... }
+//   cb_map_foreach(&m, it) { printf("%.*s\n", (int)it.key.count, it.key.data); }
+//   cb_map_free(&m);
+
+#ifndef CB_MAP_INIT_CAPACITY
+#define CB_MAP_INIT_CAPACITY 16
+#endif // !CB_MAP_INIT_CAPACITY
+
+#define CB_MAP_EMPTY 0
+#define CB_MAP_USED 1
+#define CB_MAP_TOMBSTONE 2
+
+typedef struct {
+    CB_String_View key; // key.data points at the copy owned by the map
+    void* value;
+    uint64_t hash; // cached hash, so a rehash does not recompute it
+    uint8_t state;
+} CB_Map_Slot;
+
+typedef struct {
+    CB_Map_Slot* slots;
+    size_t capacity; // slot count, always a power of two; 0 means nothing allocated yet
+    size_t count;    // live entries
+    size_t tombstones;
+    CB_Arena* arena; // when non-NULL every allocation comes from the arena
+} CB_Map;
+
+typedef struct {
+    CB_Map* map;
+    size_t index;
+    CB_String_View key; // current entry, filled in by cb_map_next
+    void* value;
+} CB_Map_Iter;
+
+// ---- hashing ----
+CBDEF uint64_t cb_hash_bytes(const void* data, size_t size);
+CBDEF uint64_t cb_hash_u64(uint64_t value);
+
+// ---- declarations ----
+CBDEF void cb_map_init_capacity(CB_Map* map, size_t capacity);
+// Arena backend: every allocation comes from the arena, which must outlive the map.
+CBDEF void cb_map_init_arena(CB_Map* map, CB_Arena* arena, size_t capacity);
+// Insert or overwrite (the key is copied). A NULL value is allowed.
+CBDEF void cb_map_put(CB_Map* map, CB_String_View key, void* value);
+CBDEF void cb_map_put_cstr(CB_Map* map, const char* key, void* value);
+// A miss returns false and leaves *out untouched; out may be NULL to only test presence.
+CBDEF bool cb_map_get(const CB_Map* map, CB_String_View key, void** out);
+CBDEF bool cb_map_get_cstr(const CB_Map* map, const char* key, void** out);
+CBDEF bool cb_map_has(const CB_Map* map, CB_String_View key);
+CBDEF bool cb_map_del(CB_Map* map, CB_String_View key);
+CBDEF size_t cb_map_count(const CB_Map* map);
+// Drop the entries but keep the allocated capacity.
+CBDEF void cb_map_clear(CB_Map* map);
+CBDEF void cb_map_free(CB_Map* map);
+CBDEF CB_Map_Iter cb_map_iter(CB_Map* map);
+CBDEF bool cb_map_next(CB_Map_Iter* it);
+#define cb_map_foreach(map, it) \
+    for (CB_Map_Iter it = cb_map_iter(map); cb_map_next(&it);)
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// HashMap (uint64 keys)
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// Same open-addressing implementation as CB_Map, with integer keys and a cheaper hash/comparison.
+// Keys need no separate allocation, so this version is leaner than the string-key one.
+
+typedef struct {
+    uint64_t key;
+    void* value;
+    uint64_t hash;
+    uint8_t state;
+} CB_Map_U64_Slot;
+
+typedef struct {
+    CB_Map_U64_Slot* slots;
+    size_t capacity;
+    size_t count;
+    size_t tombstones;
+    CB_Arena* arena;
+} CB_Map_U64;
+
+typedef struct {
+    CB_Map_U64* map;
+    size_t index;
+    uint64_t key;
+    void* value;
+} CB_Map_U64_Iter;
+
+// ---- declarations ----
+CBDEF void cb_map_u64_init_capacity(CB_Map_U64* map, size_t capacity);
+CBDEF void cb_map_u64_init_arena(CB_Map_U64* map, CB_Arena* arena, size_t capacity);
+CBDEF void cb_map_u64_put(CB_Map_U64* map, uint64_t key, void* value);
+CBDEF bool cb_map_u64_get(const CB_Map_U64* map, uint64_t key, void** out);
+CBDEF bool cb_map_u64_has(const CB_Map_U64* map, uint64_t key);
+CBDEF bool cb_map_u64_del(CB_Map_U64* map, uint64_t key);
+CBDEF size_t cb_map_u64_count(const CB_Map_U64* map);
+CBDEF void cb_map_u64_clear(CB_Map_U64* map);
+CBDEF void cb_map_u64_free(CB_Map_U64* map);
+CBDEF CB_Map_U64_Iter cb_map_u64_iter(CB_Map_U64* map);
+CBDEF bool cb_map_u64_next(CB_Map_U64_Iter* it);
+#define cb_map_u64_foreach(map, it) \
+    for (CB_Map_U64_Iter it = cb_map_u64_iter(map); cb_map_u64_next(&it);)
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// File System
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+// PATH_MAX is optional in POSIX, so provide a fallback before anyone uses it.
+#ifndef CB_PATH_MAX
+#ifdef PATH_MAX
+#define CB_PATH_MAX PATH_MAX
 #else
+#define CB_PATH_MAX 4096
+#endif /* PATH_MAX */
+#endif /* !CB_PATH_MAX */
+#ifdef _WIN32
+// Based on https://stackoverflow.com/a/75644008 (.NET uses a 4096 * sizeof(WCHAR) stack buffer).
+#ifndef CB_WIN32_ERR_MSG_SIZE
+#define CB_WIN32_ERR_MSG_SIZE (4 * 1024)
+#endif // CB_WIN32_ERR_MSG_SIZE
 
-// 用单调时钟：gettimeofday 是墙钟，会被 NTP 校正或手动改时间影响（间隔可能变负或跳变）
-CBDEF double cb_get_time_ms(void)
-{
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1000000.0;
-}
-CBDEF double cb_get_time_us(void)
-{
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (double)ts.tv_sec * 1000000.0 + (double)ts.tv_nsec / 1000.0;
-}
+CBDEF char* cb_win32_error_message(DWORD err);
 #endif // _WIN32
 
-CBDEF void cb_timer_begin(const char* name)
-{
-    if (cb_timer.sp >= CB_TIMER_MAX_DEPTH) {
-        cb__panicf(__FILE__, __LINE__, "CB_TIMER",
-                   "定时器嵌套超过 %d 层：某个 CB_TIMER_START 没有配对的 CB_TIMER_END",
-                   (int)CB_TIMER_MAX_DEPTH);
-    }
-    cb_timer.stack[cb_timer.sp].name = name;
-    cb_timer.stack[cb_timer.sp].start = cb_get_time_us();
-    cb_timer.sp += 1;
-}
+CBDEF const char* cb_path_name(const char* path);
+CBDEF bool cb_rename(const char* old_path, const char* new_path);
+CBDEF int cb_file_exists(const char* file_path);
+CBDEF const char* cb_get_current_dir_temp(void);
+CBDEF bool cb_set_current_dir(const char* path);
 
-CBDEF double cb_timer_end(void)
-{
-    if (cb_timer.sp == 0) {
-        cb__panicf(__FILE__, __LINE__, "CB_TIMER", "CB_TIMER_END 比 CB_TIMER_START 多，计时栈已空");
-    }
-    cb_timer.sp -= 1;
-    return cb_get_time_us() - cb_timer.stack[cb_timer.sp].start;
-}
+CBDEF char* cb_temp_dir_name(const char* path);
+CBDEF char* cb_temp_file_name(const char* path);
+CBDEF char* cb_temp_file_ext(const char* path);
+CBDEF char* cb_temp_running_executable_path(void);
 
-// 纳秒级单调时间戳。语义与 cb_get_time_us 一致，只是精度更高（用于细分性能测量）。
-// "unspecified epoch" 表示起点未定义，只应拿两次调用的差值。
-CBDEF uint64_t cb_nanos_since_unspecified_epoch(void)
-{
+// File types are split only five ways: error / regular file / directory / symlink / other.
+// Finer kinds (FIFO, socket, device, junction) are not implemented.
+
+typedef enum {
+    CB_FILE_ERROR = -1,
+    CB_FILE_REGULAR = 0,
+    CB_FILE_DIRECTORY,
+    CB_FILE_SYMLINK,
+    CB_FILE_OTHER,
+} CB_File_Type;
+
+typedef enum {
+    CB_WALK_CONT,
+    CB_WALK_SKIP,
+    CB_WALK_STOP,
+} CB_Walk_Action;
+
+typedef struct {
+    const char* path;
+    CB_File_Type type;
+    size_t level;
+    void* data;
+    CB_Walk_Action* action;
+} CB_Walk_Entry;
+
+typedef bool (*CB_Walk_Func)(CB_Walk_Entry entry);
+
+// Only the fields you care about are needed: cb_walk_dir(root, fn, .post_order = true) / (.data = &x);
+// the rest fall back to the defaults from CB__DEFAULT (see the General section).
+// The struct must be tagged: in C++ an "anonymous struct with default member initializers"
+// is reported by -Wnon-c-typedef-for-linkage.
+typedef struct CB_Walk_Dir_Opt {
+    void* data CB__DEFAULT(nullptr);
+    bool post_order CB__DEFAULT(false);
+} CB_Walk_Dir_Opt;
+
+CBDEF bool cb_delete_walk_entry(CB_Walk_Entry entry);
+CBDEF bool cb__walk_dir_opt_impl(CB_String_Builder* file_path, CB_Walk_Func func, size_t level, bool* stop, CB_Walk_Dir_Opt opt);
+CBDEF bool cb_walk_dir_opt(const char* root, CB_Walk_Func func, CB_Walk_Dir_Opt opt);
+#define cb_walk_dir(root, func, ...) cb_walk_dir_opt((root), (func), CB_CLIT(CB_Walk_Dir_Opt){__VA_ARGS__})
+
+typedef struct {
+    char* name;
+    bool error;
+
+    struct {
 #ifdef _WIN32
-    LARGE_INTEGER now, freq;
-    QueryPerformanceCounter(&now);
-    QueryPerformanceFrequency(&freq);
-    return (uint64_t)(now.QuadPart * 1000000000 / freq.QuadPart);
+        WIN32_FIND_DATA win32_data;
+        HANDLE win32_hFind;
+        bool win32_init;
 #else
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+        DIR* posix_dir;
+        struct dirent* posix_ent;
 #endif // _WIN32
-}
+    } cb__private;
+} CB_Dir_Entry;
 
-CBDEF CB_Timer_Stat* cb_timer_get_stat(const char* name)
+// Open a directory for iteration. Returns false on failure (cb_log prints the error).
+CBDEF bool cb_dir_entry_open(const char* dir_path, CB_Dir_Entry* dir);
+// Fetch the next entry. false means the end or an error (dir->error is set in that case).
+CBDEF bool cb_dir_entry_next(CB_Dir_Entry* dir);
+CBDEF void cb_dir_entry_close(CB_Dir_Entry dir);
+
+typedef struct {
+    const char** items;
+    size_t count;
+    size_t capacity;
+} CB_File_Paths;
+
+
+// Recursive mkdir (mkdir -p): intermediate levels are created, an existing directory is fine.
+CBDEF bool cb_mkdir_if_not_exists(const char* path);
+CBDEF bool cb_copy_file(const char* src_path, const char* dst_path);
+CBDEF bool cb_copy_directory_recursively(const char* src_path, const char* dst_path);
+CBDEF bool cb_delete_directory_recursively(const char* dir_path);
+// List a directory's entry names (without "." and ".."); the memory is temp storage.
+CBDEF bool cb_read_entire_dir(const char* parent, CB_File_Paths* children);
+CBDEF bool cb_write_entire_file(const char* path, const void* data, size_t size);
+CBDEF CB_File_Type cb_get_file_type(const char* path);
+CBDEF bool cb_delete_file(const char* path);
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// Path
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// Results are allocated in temp storage. These functions only manipulate strings and never
+// touch the file system (cb_path_absolute is the exception: it reads the current directory).
+
+// ---- declarations ----
+// Absolute path? POSIX: starts with '/'; Windows: starts with '/' or '\\', or looks like C:/
+CBDEF bool cb_path_is_absolute(const char* path);
+// Path separator predicate ('\\' on Windows, '/' elsewhere).
+CBDEF bool cb_path_is_sep(char c);
+// Join two path parts, handling separators (no doubled separator is produced).
+// When b is absolute, a is ignored and b is returned (same convention as os.path.join).
+CBDEF char* cb_path_join(const char* a, const char* b);
+// Collapse doubled separators and resolve "." and "..". No symlinks, no file system access.
+// Relative paths stay relative; a ".." at the root is dropped ("/.." -> "/").
+CBDEF char* cb_path_normalize(const char* path);
+// Turn a relative path into an absolute one (current directory + normalize).
+CBDEF char* cb_path_absolute(const char* path);
+// Replace the extension. new_ext may or may not start with a dot; NULL or "" removes it.
+// Only the part after the last dot of the last path component is touched.
+CBDEF char* cb_path_replace_ext(const char* path, const char* new_ext);
+
+#ifdef _WIN32
+#define CB_PATH_SEP '\\'
+#else
+#define CB_PATH_SEP '/'
+#endif // _WIN32
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// File System Extras
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+#ifdef _WIN32
+#define CB_PROCESS_ID() ((unsigned long)GetCurrentProcessId())
+#else
+#define CB_PROCESS_ID() ((unsigned long)getpid())
+#endif // _WIN32
+
+// ---- declarations ----
+// File size in bytes; (size_t)-1 on failure. A directory's size is platform dependent.
+CBDEF size_t cb_file_size(const char* path);
+// Last modification time (Unix seconds); -1 on failure.
+CBDEF int64_t cb_file_mtime(const char* path);
+
+// Atomic write: write a temp file next to the target, then rename over it.
+// rename is atomic within one file system, so the target is never seen half written.
+CBDEF bool cb_write_entire_file_atomic(const char* path, const void* data, size_t size);
+
+// Create a symlink. On Windows this needs developer mode or administrator rights.
+CBDEF bool cb_create_symlink(const char* target, const char* link_path);
+// Read a symlink target (allocated in temp storage); NULL on failure.
+CBDEF char* cb_read_symlink(const char* path);
+
+// Wildcard match: * any run, ? one character, [abc] / [a-z] / [!abc] character classes.
+CBDEF bool cb_glob_match(const char* pattern, const char* text);
+// List the entries of dir matching pattern (one level only, no recursion).
+// out receives full "dir/name" paths; the memory is temp storage.
+CBDEF bool cb_glob(const char* dir, const char* pattern, CB_File_Paths* out);
+
+// Read-only memory mapping, for zero-copy reads of large files.
+typedef struct {
+    void* data;
+    size_t size;
+#ifdef _WIN32
+    HANDLE file_handle;
+    HANDLE mapping_handle;
+#else
+    int fd;
+#endif // _WIN32
+} CB_Mmap;
+
+CBDEF bool cb_mmap_open(const char* path, CB_Mmap* out);
+CBDEF void cb_mmap_close(CB_Mmap* mmap);
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// Math & Bits
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// cb_min / cb_max / cb_clamp. On GCC/Clang every argument is evaluated exactly once and keeps its
+// own type; on other compilers the plain macro fallback evaluates an argument twice, so do not pass
+// something like i++ to it. C++ uses templates and has no such restriction.
+
+#ifdef __cplusplus
+
+template <typename T>
+struct cb__remove_ref {
+    typedef T type;
+};
+template <typename T>
+struct cb__remove_ref<T&> {
+    typedef T type;
+};
+
+// References are stripped for the C++ version: `a < b ? a : b` yields an lvalue, so decltype
+// would give T& and the function would return a dangling reference to a local copy.
+#define CB__MINMAX_RET(expr) typename cb__remove_ref<decltype(expr)>::type
+
+template <typename T, typename U>
+constexpr auto cb_min(T a, U b) -> CB__MINMAX_RET(a < b ? a : b)
 {
-    for (size_t i = 0; i < cb_timer.stats_count; ++i) {
-        if (strcmp(cb_timer.stats[i].name, name) == 0) return &cb_timer.stats[i];
-    }
-
-    if (cb_timer.stats_count == cb_timer.stats_capacity) {
-        size_t new_capacity = cb_timer.stats_capacity == 0 ? 16 : cb_timer.stats_capacity * 2;
-        size_t bytes = new_capacity * sizeof(*cb_timer.stats);
-        cb_timer.stats = (CB_Timer_Stat*)CB_REALLOC(cb_timer.stats, bytes);
-        cb_alloc_check(cb_timer.stats, bytes);
-        cb_timer.stats_capacity = new_capacity;
-    }
-
-    CB_Timer_Stat* stat = &cb_timer.stats[cb_timer.stats_count++];
-    stat->name = name;
-    stat->total = 0;
-    stat->count = 0;
-    stat->min = 0;
-    stat->max = 0;
-    return stat;
+    return a < b ? a : b;
 }
 
-CBDEF double cb_timer_end_stat(void)
+template <typename T, typename U>
+constexpr auto cb_max(T a, U b) -> CB__MINMAX_RET(a > b ? a : b)
 {
-    double elapsed = cb_timer_end();
-    // cb_timer_end() 已经弹过栈，stack[sp] 就是刚结束的那一层
-    CB_Timer_Stat* stat = cb_timer_get_stat(cb_timer.stack[cb_timer.sp].name);
-    stat->total += elapsed;
-    stat->count += 1;
-    if (stat->count == 1) {
-        stat->min = elapsed;
-        stat->max = elapsed;
-    } else {
-        if (elapsed < stat->min) stat->min = elapsed;
-        if (elapsed > stat->max) stat->max = elapsed;
-    }
-    return elapsed;
+    return a > b ? a : b;
 }
 
-CBDEF void cb_timer_end_print(void)
+template <typename T, typename U, typename V>
+constexpr auto cb_clamp(T x, U lo, V hi) -> CB__MINMAX_RET(cb_min(cb_max(x, lo), hi))
 {
-    double elapsed = cb_timer_end();
-    fprintf(stderr, "[%s] took %.3f us\n", cb_timer.stack[cb_timer.sp].name, elapsed);
+    return cb_min(cb_max(x, lo), hi);
 }
 
-CBDEF void cb_timer_fprint_stats(FILE* out)
+#else // !__cplusplus
+
+#if defined(__GNUC__) || defined(__clang__)
+// Single evaluation: each argument is read exactly once and keeps its own type, so
+// cb_min(2, 1.9) is 1.9 rather than a truncated 1.
+#define cb_min(a, b) \
+    __extension__({ __typeof__(a) cb__a = (a); __typeof__(b) cb__b = (b); cb__a < cb__b ? cb__a : cb__b; })
+#define cb_max(a, b) \
+    __extension__({ __typeof__(a) cb__a = (a); __typeof__(b) cb__b = (b); cb__a > cb__b ? cb__a : cb__b; })
+#define cb_clamp(x, lo, hi) \
+    __extension__({ __typeof__(x) cb__x = (x); __typeof__(lo) cb__lo = (lo); __typeof__(hi) cb__hi = (hi); \
+                    cb__x < cb__lo ? cb__lo : (cb__x > cb__hi ? cb__hi : cb__x); })
+#else
+// Portable fallback: each argument is evaluated twice, so avoid side effects in the arguments.
+#define cb_min(a, b) ((a) < (b) ? (a) : (b))
+#define cb_max(a, b) ((a) > (b) ? (a) : (b))
+#define cb_clamp(x, lo, hi) ((x) < (lo) ? (lo) : ((x) > (hi) ? (hi) : (x)))
+#endif
+
+
+#endif // __cplusplus
+
+// Round value up/down to a multiple of alignment (a power of two):
+//     cb_align_up(13, 8) -> 16        cb_align_down(13, 8) -> 8
+#define cb_align_up(value, alignment) (((value) + (alignment) - 1) & ~((alignment) - 1))
+#define cb_align_down(value, alignment) ((value) & ~((alignment) - 1))
+
+// ---- declarations ----
+CBDEF bool cb_is_pow2(uint64_t value);
+// Round up to the next power of two: 0 and 1 give 1, overflow gives 0.
+//     cb_next_pow2(100) -> 128
+CBDEF uint64_t cb_next_pow2(uint64_t value);
+// Number of set bits: cb_popcount64(0xFF00) -> 8.
+CBDEF int cb_popcount64(uint64_t value);
+// Trailing/leading zero count: cb_ctz64(8) -> 3, cb_clz64(1) -> 63; both give 64 for 0.
+CBDEF int cb_ctz64(uint64_t value);
+CBDEF int cb_clz64(uint64_t value);
+CBDEF uint64_t cb_rotl64(uint64_t value, int amount);
+CBDEF uint64_t cb_rotr64(uint64_t value, int amount);
+// Host byte order: cb_is_little_endian() -> true on x86 and ARM.
+CBDEF bool cb_is_little_endian(void);
+CBDEF uint32_t cb_bswap32(uint32_t value);
+CBDEF uint64_t cb_bswap64(uint64_t value);
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// Time & Date
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// ---- declarations ----
+// Current UTC time in Unix seconds: cb_time_now() -> 1758400000.
+CBDEF int64_t cb_time_now(void);
+// Unix seconds to an ISO 8601 UTC string in temp storage:
+//     cb_time_to_iso8601(1758400000) -> "2025-09-21T18:13:20Z"
+CBDEF char* cb_time_to_iso8601(int64_t unix_seconds);
+// Human-readable duration in temp storage: 0.42 -> "420ms", 12.5 -> "12.5s",
+// 185 -> "3m5s", 7325 -> "2h2m".
+CBDEF char* cb_duration_to_str(double seconds);
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// Random
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// xoshiro256** state. Better than rand() and identical on every platform, so a seed reproduces
+// a run exactly. Fine for simulation, sampling and shuffling, NOT for cryptography.
+//     CB_Rng rng; cb_rng_seed(&rng, 42); uint64_t x = cb_rng_next(&rng);
+
+typedef struct {
+    uint64_t state[4];
+} CB_Rng;
+
+// ---- declarations ----
+CBDEF void cb_rng_seed(CB_Rng* rng, uint64_t seed);
+CBDEF uint64_t cb_rng_next(CB_Rng* rng);
+// Uniform double in [0,1): cb_rng_double(&rng) -> 0.379...
+CBDEF double cb_rng_double(CB_Rng* rng);
+// Uniform integer in [0,bound): cb_rng_range(&rng, 10) -> 0..9; bound 0 returns 0.
+CBDEF uint64_t cb_rng_range(CB_Rng* rng, uint64_t bound);
+// Fisher-Yates shuffle in place: cb_rng_shuffle(&rng, xs, count, sizeof(xs[0]));
+CBDEF void cb_rng_shuffle(CB_Rng* rng, void* items, size_t count, size_t elem_size);
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// Runtime Environment
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// ---- declarations ----
+// Environment variable copied into temp storage, NULL when unset (like getenv):
+//     const char* home = cb_env_get("HOME");
+CBDEF char* cb_env_get(const char* name);
+CBDEF bool cb_env_set(const char* name, const char* value);
+// Is stdout a terminal? cb_stdout_is_tty() -> false when the output is redirected.
+CBDEF bool cb_stdout_is_tty(void);
+// Terminal width in columns, 80 when it cannot be determined.
+CBDEF int cb_terminal_width(void);
+// Are ANSI colors wanted? true when stdout is a tty, NO_COLOR is unset and colors were not
+// disabled explicitly.
+CBDEF bool cb_color_enabled(void);
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// Hex Dump
+////////////////////////////////////////////////////////////////////////////////////////////////////
+CBDEF void cb_dump_hex(const void* data, size_t size);
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// CLI Args
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// Minimal argument parser. Accepted forms:
+//     --key=value   option with a value
+//     --key         switch (value is NULL)
+//     -k            switch, same as --k
+//     -k=value      option with a value
+//     --            everything after it is a positional argument
+//     anything else is a positional argument
+// "--key value" (space separated) is not supported: write --key=value.
+//     CB_Args args; cb_args_parse(&args, argc, argv);
+//     if (cb_args_has(&args, "verbose")) { ... }
+//     const char* out = cb_args_get(&args, "out", "a.bin");
+
+typedef struct {
+    const char* name;  // name without the leading - / --
+    const char* value; // NULL for a switch
+} CB_Arg_Entry;
+
+typedef struct {
+    CB_Arg_Entry* items;
+    size_t count;
+    size_t capacity;
+} CB_Arg_List;
+
+typedef struct {
+    CB_Arg_List options;
+    CB_File_Paths positionals;
+} CB_Args;
+
+// ---- declarations ----
+// Pass main's argc/argv; argv[0] is treated as the program name and skipped.
+CBDEF void cb_args_parse(CB_Args* args, int argc, char** argv);
+// Was this switch/option given?
+CBDEF bool cb_args_has(const CB_Args* args, const char* name);
+// Value of an option, or fallback when it is absent (the last occurrence wins).
+CBDEF const char* cb_args_get(const CB_Args* args, const char* name, const char* fallback);
+// cb_args_get_first() returns the first occurrence instead of the last one.
+CBDEF const char* cb_args_get_first(const CB_Args* args, const char* name);
+CBDEF size_t cb_args_positional_count(const CB_Args* args);
+CBDEF const char* cb_args_positional(const CB_Args* args, size_t index);
+CBDEF void cb_args_free(CB_Args* args);
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// Process & FD
+////////////////////////////////////////////////////////////////////////////////////////////////////
+#ifdef _WIN32
+typedef HANDLE CB_Proc;
+#define CB_INVALID_PROC INVALID_HANDLE_VALUE
+typedef HANDLE CB_FD;
+#define CB_INVALID_FD INVALID_HANDLE_VALUE
+#else
+typedef int CB_Proc;
+#define CB_INVALID_PROC (-1)
+typedef int CB_FD;
+#define CB_INVALID_FD (-1)
+#endif // _WIN32
+
+CBDEF CB_FD cb_fd_open_read(const char* path);
+CBDEF CB_FD cb_fd_open_write(const char* path);
+CBDEF void cb_fd_close(CB_FD fd);
+
+typedef struct {
+    CB_FD read;
+    CB_FD write;
+} CB_Pipe;
+
+CBDEF bool cb_pipe_create(CB_Pipe* pp);
+
+typedef struct {
+    CB_Proc* items;
+    size_t count;
+    size_t capacity;
+} CB_Procs;
+
+CBDEF int cb__proc_wait_async(CB_Proc proc, int ms);
+// Wait for one child: cb_proc_wait(proc) -> true when it exited with status 0.
+CBDEF bool cb_proc_wait(CB_Proc proc);
+// Wait for every process of the array: cb_procs_wait(procs).
+CBDEF bool cb_procs_wait(CB_Procs procs);
+// Wait for all of them and reset the array for reuse: cb_procs_wait_and_reset(&procs).
+CBDEF bool cb_procs_wait_and_reset(CB_Procs* procs);
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// Cmd
+////////////////////////////////////////////////////////////////////////////////////////////////////
+typedef struct {
+    const char** items;
+    size_t count;
+    size_t capacity;
+} CB_Cmd;
+
+// Options of cb_cmd_run_opt(); the cb_cmd_run(cmd, ...) macro fills them by name:
+//     cb_cmd_run(&cmd, .stdout_path = "out.txt", .async = &procs, .max_procs = 4);
+typedef struct CB_Cmd_Opt {
+    // run asynchronously, appending the CB_Proc to this array
+    CB_Procs* async CB__DEFAULT(nullptr);
+    // concurrency limit for .async; 0 means cb_nprocs()
+    size_t max_procs CB__DEFAULT(0);
+    // keep cmd.count after the run, so the same command can be run again
+    bool dont_reset CB__DEFAULT(false);
+    // redirect stdin from this file
+    const char* stdin_path CB__DEFAULT(nullptr);
+    // redirect stdout to this file
+    const char* stdout_path CB__DEFAULT(nullptr);
+    // redirect stderr to this file
+    const char* stderr_path CB__DEFAULT(nullptr);
+} CB_Cmd_Opt;
+
+CBDEF void cb__cmd_append(CB_Cmd* cmd, size_t n, const char** args);
+#ifdef __cplusplus
+template <typename... Args>
+#define cb_cmd_append(cmd, ...) cb__cpp_cmd_append_wrapper(cmd, __VA_ARGS__)
+CBDEF void cb__cpp_cmd_append_wrapper(CB_Cmd* cmd, Args... strs)
 {
-    if (out == NULL) return;
-
-    // 名字列宽按实际内容算，免得长名字把后面的列挤歪
-    size_t name_width = strlen("Name");
-    for (size_t i = 0; i < cb_timer.stats_count; ++i) {
-        size_t len = strlen(cb_timer.stats[i].name);
-        if (len > name_width) name_width = len;
-    }
-
-    fprintf(out, "\n========== Timer Statistics ==========\n");
-    fprintf(out, "%-*s %10s %12s %12s %12s %12s\n",
-            (int)name_width, "Name", "Count", "Avg(us)", "Min(us)", "Max(us)", "Total(us)");
-    for (size_t i = 0; i < cb_timer.stats_count; ++i) {
-        CB_Timer_Stat* s = &cb_timer.stats[i];
-        double avg = s->count > 0 ? s->total / (double)s->count : 0.0;
-        fprintf(out, "%-*s %10zu %12.3f %12.3f %12.3f %12.3f\n",
-                (int)name_width, s->name, s->count, avg, s->min, s->max, s->total);
-    }
-    fprintf(out, "========================================\n");
+    const char* args[] = {strs...};
+    cb__cmd_append(cmd, sizeof(args) / sizeof(args[0]), args);
 }
+#else
+#define cb_cmd_append(cmd, ...) \
+    cb__cmd_append(cmd, sizeof((const char*[]){__VA_ARGS__}) / sizeof(const char*), (const char*[]){__VA_ARGS__})
+#endif // __cplusplus
 
-CBDEF void cb_timer_print_stats(void)
-{
-    cb_timer_fprint_stats(stderr);
-}
+// Append every argument of another command: cb_cmd_extend(&cmd, &other);
+#define cb_cmd_extend(cmd, other_cmd) \
+    cb_da_append_many((cmd), (other_cmd)->items, (other_cmd)->count)
+// Free the argv storage and zero the handle: cb_cmd_free(cmd);
+#define cb_cmd_free(cmd) \
+    do {                     \
+        cb_da_free(cmd);     \
+        (cmd).items = NULL;  \
+        (cmd).count = 0;     \
+        (cmd).capacity = 0;  \
+    } while (0)
 
-CBDEF void cb_timer_reset(void)
-{
-    cb_timer.stats_count = 0;
-    cb_timer.sp = 0;
-}
+CBDEF void cb_cmd_to_sb(CB_Cmd cmd, CB_String_Builder* sb);
+CBDEF int cb_nprocs(void);
+CBDEF CB_Proc cb__cmd_start_process(CB_Cmd cmd, CB_FD* fdin, CB_FD* fdout, CB_FD* fderr);
+CBDEF bool cb_cmd_run_opt(CB_Cmd* cmd, CB_Cmd_Opt opt);
+CBDEF bool cb__cmd_run_opt_with_location(CB_Cmd* cmd, const char* file, int line, CB_Cmd_Opt opt);
+#define cb_cmd_run(cmd, ...) cb__cmd_run_opt_with_location((cmd), __FILE__, __LINE__, CB_CLIT(CB_Cmd_Opt){__VA_ARGS__})
+
+typedef struct {
+    CB_FD fdin;
+    CB_Cmd cmd;
+    bool err2out;
+} CB_Pipes;
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// Cmd Chain
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// Pipeline of commands; the code below is equivalent to "foo | bar | baz > out.txt":
+//   CB_Chain chain = CB_ZERO;  CB_Cmd cmd = CB_ZERO;
+//   if (!cb_chain_begin(&chain)) return 1;
+//   cb_cmd_append(&cmd, "foo"); if (!cb_chain_cmd(&chain, &cmd)) return 1;
+//   cb_cmd_append(&cmd, "bar"); if (!cb_chain_cmd(&chain, &cmd)) return 1;
+//   cb_cmd_append(&cmd, "baz"); if (!cb_chain_cmd(&chain, &cmd)) return 1;
+//   if (!cb_chain_end(&chain, .stdout_path = "out.txt")) return 1;
+//
+// The only allocation inside CB_Chain is .cmd; free it with cb_da_free(chain.cmd) when reusing.
+
+typedef struct {
+    // output end of the previous command, used as the input of the next one
+    CB_FD fdin;
+    // command accumulated by the last cb_chain_cmd()
+    CB_Cmd cmd;
+    // .err2out of the last cb_chain_cmd()
+    bool err2out;
+} CB_Chain;
+
+typedef struct CB_Chain_Begin_Opt {
+    const char* stdin_path CB__DEFAULT(nullptr);
+} CB_Chain_Begin_Opt;
+
+typedef struct CB_Chain_Cmd_Opt {
+    bool err2out CB__DEFAULT(false);
+    bool dont_reset CB__DEFAULT(false);
+} CB_Chain_Cmd_Opt;
+
+typedef struct CB_Chain_End_Opt {
+    CB_Procs* async CB__DEFAULT(nullptr);
+    size_t max_procs CB__DEFAULT(0);
+    const char* stdout_path CB__DEFAULT(nullptr);
+    const char* stderr_path CB__DEFAULT(nullptr);
+} CB_Chain_End_Opt;
+
+// Remembers the fds to close at the end (a chain needs at most 3; 5 slots is plenty).
+typedef struct {
+    CB_FD items[5];
+    size_t count;
+} CB_Fd_List;
+
+// ---- declarations ----
+CBDEF bool cb_chain_begin_opt(CB_Chain* chain, CB_Chain_Begin_Opt opt);
+CBDEF bool cb_chain_cmd_opt(CB_Chain* chain, CB_Cmd* cmd, CB_Chain_Cmd_Opt opt);
+CBDEF bool cb_chain_end_opt(CB_Chain* chain, CB_Chain_End_Opt opt);
+
+#define cb_chain_begin(chain, ...) cb_chain_begin_opt((chain), CB_CLIT(CB_Chain_Begin_Opt){__VA_ARGS__})
+#define cb_chain_cmd(chain, cmd, ...) cb_chain_cmd_opt((chain), (cmd), CB_CLIT(CB_Chain_Cmd_Opt){__VA_ARGS__})
+#define cb_chain_end(chain, ...) cb_chain_end_opt((chain), CB_CLIT(CB_Chain_End_Opt){__VA_ARGS__})
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// Build Flags
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// Defaults for the compiler abstraction used by build scripts. Every macro has its own #ifndef
+// guard, so a project can override any of them before including cb.h:
+//     #define cb_cc_flags(cmd) cb_cmd_append(cmd, "-Wall", "-Wextra", "-O2")
+//     #include "cb.h"
+//
+// The platform split follows what actually compiles on each system:
+//   macOS    neither -std=c99 nor -D_POSIX_C_SOURCE is passed: both hide symbols we need.
+//   FreeBSD  -D_POSIX_C_SOURCE hides required symbols, -std=c99 is fine.
+//   Linux    -std=c99 needs -D_POSIX_C_SOURCE=200112L, otherwise lstat/readlink/clock_gettime/
+//            nanosleep/PATH_MAX stay undeclared.
+//   MSVC     C and C++ modes take different switches (/TC vs /TP, /std:c++20) and no -I. form.
+#ifndef cb_cc
+#if defined(_WIN32) && defined(_MSC_VER)
+#define cb_cc(cmd) cb_cmd_append(cmd, "cl.exe")
+#elif defined(_WIN32) && defined(__clang__)
+#define cb_cc(cmd) cb_cmd_append(cmd, "clang")
+#elif defined(_WIN32) && defined(__TINYC__)
+#define cb_cc(cmd) cb_cmd_append(cmd, "tcc")
+#elif defined(__cplusplus)
+#define cb_cc(cmd) cb_cmd_append(cmd, "cc", "-x", "c++")
+#else
+#define cb_cc(cmd) cb_cmd_append(cmd, "cc")
+#endif
+#endif /* cb_cc */
+
+#ifndef cb_cc_flags
+#if defined(__cplusplus)
+#if defined(_MSC_VER)
+#define cb_cc_flags(cmd) cb_cmd_append(cmd, "/std:c++20", "/TP", "/W4", "/nologo", "/D_CRT_SECURE_NO_WARNINGS", "-I.")
+#else
+#define cb_cc_flags(cmd) cb_cmd_append(cmd, "-Wall", "-Wextra", "-Wno-missing-field-initializers", "-Wswitch-enum", "-ggdb", "-I.")
+#endif
+#else // !__cplusplus
+#if defined(_MSC_VER)
+#define cb_cc_flags(cmd) cb_cmd_append(cmd, "/TC", "/W4", "/nologo", "/D_CRT_SECURE_NO_WARNINGS", "-I.")
+#elif defined(__APPLE__) || defined(__MACH__)
+#define cb_cc_flags(cmd) cb_cmd_append(cmd, "-Wall", "-Wextra", "-Wswitch-enum", "-I.")
+#elif defined(__FreeBSD__)
+#define cb_cc_flags(cmd) cb_cmd_append(cmd, "-Wall", "-Wextra", "-Wswitch-enum", "-std=c99", "-ggdb", "-I.")
+#else
+#define cb_cc_flags(cmd) cb_cmd_append(cmd, "-Wall", "-Wextra", "-Wswitch-enum", "-std=c99", "-D_POSIX_C_SOURCE=200112L", "-ggdb", "-I.")
+#endif
+#endif // __cplusplus
+#endif /* cb_cc_flags */
+
+#ifndef cb_cc_output
+#if defined(_MSC_VER) && !defined(__clang__)
+#define cb_cc_output(cmd, output_path) cb_cmd_append(cmd, cb_temp_sprintf("/Fe:%s", (output_path)), cb_temp_sprintf("/Fo:%s", (output_path)))
+#else
+#define cb_cc_output(cmd, output_path) cb_cmd_append(cmd, "-o", (output_path))
+#endif
+#endif /* cb_cc_output */
+
+#ifndef cb_cc_inputs
+#define cb_cc_inputs(cmd, ...) cb_cmd_append(cmd, __VA_ARGS__)
+#endif /* cb_cc_inputs */
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// C Builder
+////////////////////////////////////////////////////////////////////////////////////////////////////
+#ifndef CB_REBUILD_URSELF
+#if defined(_WIN32)
+#if defined(__clang__)
+#if defined(__cplusplus)
+#define CB_REBUILD_URSELF(binary_path, source_path) "clang", "-x", "c++", "-o", binary_path, source_path
+#else
+#define CB_REBUILD_URSELF(binary_path, source_path) "clang", "-x", "c", "-o", binary_path, source_path
+#endif
+#elif defined(__GNUC__)
+#if defined(__cplusplus)
+#define CB_REBUILD_URSELF(binary_path, source_path) "gcc", "-x", "c++", "-o", binary_path, source_path
+#else
+#define CB_REBUILD_URSELF(binary_path, source_path) "gcc", "-x", "c", "-o", binary_path, source_path
+#endif
+#elif defined(_MSC_VER)
+#define CB_REBUILD_URSELF(binary_path, source_path) "cl.exe", cb_temp_sprintf("/Fe:%s", (binary_path)), source_path
+#elif defined(__TINYC__)
+#define CB_REBUILD_URSELF(binary_path, source_path) "tcc", "-o", binary_path, source_path
+#endif
+#else
+#if defined(__cplusplus)
+#define CB_REBUILD_URSELF(binary_path, source_path) "cc", "-x", "c++", "-o", binary_path, source_path
+#else
+#define CB_REBUILD_URSELF(binary_path, source_path) "cc", "-x", "c", "-o", binary_path, source_path
+#endif
+#endif
+#endif
+
+// Compiler command line used to rebuild this build script; redefine it to bootstrap differently.
+CBDEF int cb_needs_rebuild(const char* binary_path, const char** source_paths, size_t source_paths_count);
+CBDEF void cb__self_rebuild(int argc, char** argv, const char* source_path, ...);
+// Call once at the top of main(): rebuild this program and re-run it when the program itself or any
+// listed source file is newer than the binary. C99 needs at least one listed source path:
+//     CB_SELF_REBUILD(argc, argv, "cb.h");
+#define CB_SELF_REBUILD(argc, argv, ...) cb__self_rebuild(argc, argv, __FILE__, __VA_ARGS__, NULL)
+
+
+
+#endif /* CB_H_ */
+
+#ifdef CB_IMPLEMENTATION
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// General
+////////////////////////////////////////////////////////////////////////////////////////////////////
+#ifdef __cplusplus
+#else
+#endif // __cplusplus
+#ifdef __cplusplus
+#else
+#endif // __cplusplus
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// Allocator
+////////////////////////////////////////////////////////////////////////////////////////////////////
+#ifdef __cplusplus
+#else
+#endif // __cplusplus
+#if defined(__cplusplus)
+#else
+#endif
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // Arena / Temp Storage
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-// arena：显式作用域分配器。可创建任意多个实例，按 region 链分块增长，永不"满"。
-// temp ：arena 的一个 _Thread_local 全局实例的薄封装，提供"不用管内存"的临时分配。
-// 两者共用同一份内核，区别只在使用模型：显式句柄 vs 隐式单例。
-// CB_TEMP_CAPACITY 是第一块的大小而不是总量上限，写满后自动追加新块；
-// cb_temp_alloc 不会返回 NULL（分配不出来直接 OOM 终止）。
-
-#ifndef CB_ARENA_REGION_INIT_CAPACITY
-#define CB_ARENA_REGION_INIT_CAPACITY (64 * 1024)
-#endif // !CB_ARENA_REGION_INIT_CAPACITY
-
-#ifndef CB_TEMP_CAPACITY
-#define CB_TEMP_CAPACITY CB_ARENA_REGION_INIT_CAPACITY
-#endif // !CB_TEMP_CAPACITY
-
-// 对齐粒度用 max_align_t，足以承载任何标准类型
-#ifndef CB_ARENA_ALIGN
-#define CB_ARENA_ALIGN (alignof(max_align_t))
-#endif // !CB_ARENA_ALIGN
-
-// 线程局部：每个线程一套独立的 temp 栈，多线程下不会互相踩。
-// 单线程程序可 #define CB_THREAD_LOCAL 为空以省掉 TLS 访问开销。
 #ifndef CB_THREAD_LOCAL
 #ifdef __cplusplus
-#define CB_THREAD_LOCAL thread_local
+#elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+#elif defined(_MSC_VER)
+#elif defined(__GNUC__) || defined(__clang__)
 #else
-#define CB_THREAD_LOCAL _Thread_local
-#endif // __cplusplus
+#endif
 #endif // !CB_THREAD_LOCAL
 
-typedef struct CB_Arena_Region CB_Arena_Region;
-struct CB_Arena_Region {
-    CB_Arena_Region* next;
-    size_t count;                               // 已用字节数，始终是 CB_ARENA_ALIGN 的整数倍
-    size_t capacity;                            // 本块可用字节数
-#ifdef __cplusplus
-    // C++ 没有柔性数组成员（-Wpedantic 会报 C99 扩展）。改用 1 元素数组：
-    // 数据区偏移不变，见下面的 CB__ARENA_REGION_DATA_OFFSET。
-    alignas(max_align_t) unsigned char data[1];
-#else
-    alignas(max_align_t) unsigned char data[]; // 强制 data 按 max_align_t 对齐
-#endif
-};
-
-// 数据区相对 region 起始的偏移。必须用 offsetof 而不是 sizeof：C++ 版的 sizeof
-// 含尾部填充，而 offsetof 在两种语言下都等于 C 版的 sizeof(CB_Arena_Region)。
-#define CB__ARENA_REGION_DATA_OFFSET offsetof(CB_Arena_Region, data)
-
-typedef struct {
-    CB_Arena_Region* begin; // 链头
-    CB_Arena_Region* end;   // 当前分配块
-    size_t init_capacity;   // 首个块的容量，0 表示使用 CB_ARENA_REGION_INIT_CAPACITY
-} CB_Arena;
-
-// 快照：记录 (块, 块内偏移)，回滚 O(1)，可跨越多个块
-typedef struct {
-    CB_Arena_Region* region;
-    size_t count;
-} CB_Arena_Mark;
-
-// ---- 声明 ----
-CBDEF void cb__oom(size_t requested_size, const char* file, int line);
-
-CBDEF void* cb_arena_alloc(CB_Arena* a, size_t size);
-CBDEF void* cb_arena_alloc_aligned(CB_Arena* a, size_t size, size_t alignment);
-// 注意：arena 无法原地扩容。new_size > old_size 时会新分配并拷贝，返回的可能是新指针。
-CBDEF void* cb_arena_realloc(CB_Arena* a, void* old_ptr, size_t old_size, size_t new_size);
-CBDEF char* cb_arena_strdup(CB_Arena* a, const char* cstr);
-CBDEF char* cb_arena_strndup(CB_Arena* a, const char* cstr, size_t n);
-CBDEF char* cb_arena_sprintf(CB_Arena* a, const char* fmt, ...) CB_PRINTF_FORMAT(2, 3);
-CBDEF char* cb_arena_vsprintf(CB_Arena* a, const char* fmt, va_list ap);
-CBDEF CB_Arena_Mark cb_arena_save(CB_Arena* a);
-CBDEF void cb_arena_rewind(CB_Arena* a, CB_Arena_Mark mark);
-// 清空内容但保留已分配的块供复用（arena 的常规用法，不把内存还给系统）
-CBDEF void cb_arena_reset(CB_Arena* a);
-// 真正把所有块还给系统
-CBDEF void cb_arena_free(CB_Arena* a);
-
-CBDEF void* cb_temp_alloc(size_t size);
-CBDEF char* cb_temp_strdup(const char* cstr);
-CBDEF char* cb_temp_strndup(const char* cstr, size_t n);
-CBDEF char* cb_temp_sprintf(const char* fmt, ...) CB_PRINTF_FORMAT(1, 2);
-CBDEF char* cb_temp_vsprintf(const char* fmt, va_list ap);
-// 复位整个 temp 栈（保留已分配的块，不清空整个存储）
-CBDEF void cb_temp_reset(void);
-// 保存检查点。用法：CB_Arena_Mark mark = cb_temp_save(); ... cb_temp_rewind(mark);
-CBDEF CB_Arena_Mark cb_temp_save(void);
-// 回到检查点，此后的分配全部失效
-CBDEF void cb_temp_rewind(CB_Arena_Mark mark);
-
-// ---- 定义 ----
+// ---- definitions ----
 CBDEF void cb__oom(size_t requested_size, const char* file, int line)
 {
-    fprintf(stderr, "%s:%d: OOM: 分配 %zu 字节失败\n", file, line, requested_size);
+    fprintf(stderr, "%s:%d: OOM: could not allocate %zu bytes\n", file, line, requested_size);
     abort();
 }
-
 #ifdef CB_ALLOC_TRACK
-// 追踪层：每次分配前面挂一个记录头。头里含一个 max_align_t 成员，
-// 保证 sizeof 是对齐粒度的整数倍，返回给用户的指针仍然满足最大对齐要求。
-typedef struct CB__Alloc_Record {
-    struct CB__Alloc_Record* prev;
-    struct CB__Alloc_Record* next;
-    max_align_t align_guard;
-    size_t size;
-    const char* file;
-    int line;
-} CB__Alloc_Record;
-
-CB__STATE(CB__Alloc_Record*, cb__alloc_head, NULL);
-CB__STATE(size_t, cb__alloc_live_count, 0);
-CB__STATE(size_t, cb__alloc_live_size, 0);
-CB__STATE(size_t, cb__alloc_peak_size, 0);
-CB__STATE(size_t, cb__alloc_total_count, 0);
+CB__Alloc_Record* cb__alloc_head = NULL;
+size_t cb__alloc_live_count = 0;
+size_t cb__alloc_live_size = 0;
+size_t cb__alloc_peak_size = 0;
+size_t cb__alloc_total_count = 0;
 
 CBDEF void* cb__tracked_realloc(void* ptr, size_t size, const char* file, int line)
 {
@@ -947,7 +1726,7 @@ CBDEF void* cb__tracked_realloc(void* ptr, size_t size, const char* file, int li
         return (char*)rec + sizeof(CB__Alloc_Record);
     }
 
-    if (size == 0) { // realloc(p, 0) 语义等同 free
+    if (size == 0) { // realloc(p, 0) behaves like free
         cb__tracked_free(ptr, file, line);
         return NULL;
     }
@@ -956,7 +1735,7 @@ CBDEF void* cb__tracked_realloc(void* ptr, size_t size, const char* file, int li
     size_t total = sizeof(CB__Alloc_Record) + size;
     CB__Alloc_Record* moved = (CB__Alloc_Record*)CB_REALLOC_RAW(rec, total);
     cb_alloc_check(moved, total);
-    if (moved != rec) { // 链表节点被搬走了，把邻居的指针接回来
+    if (moved != rec) { // the node moved, so relink its neighbours
         if (moved->prev != NULL) moved->prev->next = moved;
         else cb__alloc_head = moved;
         if (moved->next != NULL) moved->next->prev = moved;
@@ -1016,6 +1795,7 @@ CBDEF void cb__arena_free_region(CB_Arena_Region* r)
 
 CBDEF void* cb_arena_alloc_aligned(CB_Arena* a, size_t size, size_t alignment)
 {
+    CB_ASSERT(alignment != 0 && (alignment & (alignment - 1)) == 0 && "alignment must be a power of two");
     size_t align = alignment > CB_ARENA_ALIGN ? alignment : CB_ARENA_ALIGN;
     size_t need = size == 0 ? 1 : size;
 
@@ -1028,12 +1808,13 @@ CBDEF void* cb_arena_alloc_aligned(CB_Arena* a, size_t size, size_t alignment)
             continue;
         }
 
-        // 按"绝对地址"把当前位置抬高到 alignment 边界：data 本身只保证 max_align_t
-        // 对齐，alignment 更大时只把偏移量凑成倍数并不能让最终地址满足要求。
+        // Round the absolute address up to the alignment boundary. Rounding the offset alone is
+        // not enough: data starts at an arbitrary offset, and a larger alignment must land on an
+        // absolute boundary. alignment is a power of two, so this is a mask, not a division.
         {
             uintptr_t base = (uintptr_t)a->end->data;
             uintptr_t addr = base + (uintptr_t)a->end->count;
-            uintptr_t aligned = (addr + (uintptr_t)align - 1) / (uintptr_t)align * (uintptr_t)align;
+            uintptr_t aligned = (addr + (uintptr_t)align - 1) & ~((uintptr_t)align - 1);
             size_t offset = (size_t)(aligned - base);
             if (offset + need <= a->end->capacity) {
                 void* result = a->end->data + offset;
@@ -1043,7 +1824,7 @@ CBDEF void* cb_arena_alloc_aligned(CB_Arena* a, size_t size, size_t alignment)
         }
 
         if (a->end->next != NULL) {
-            a->end = a->end->next; // 回滚过的旧块可能还能用，先往前走
+            a->end = a->end->next; // a rewound region may still fit, walk forward first
             continue;
         }
 
@@ -1116,7 +1897,7 @@ CBDEF CB_Arena_Mark cb_arena_save(CB_Arena* a)
 
 CBDEF void cb_arena_rewind(CB_Arena* a, CB_Arena_Mark mark)
 {
-    if (mark.region == NULL) { // 快照来自尚未分配过任何块的 arena
+    if (mark.region == NULL) { // the snapshot came from an arena without regions yet
         cb_arena_reset(a);
         return;
     }
@@ -1146,9 +1927,7 @@ CBDEF void cb_arena_free(CB_Arena* a)
     a->begin = NULL;
     a->end = NULL;
 }
-
-// temp 就是 arena 的一个线程局部实例（CB__STATE 决定每 TU 一份还是全局共享）
-CB__STATE(CB_THREAD_LOCAL CB_Arena, cb__temp_arena, {0, 0, CB_TEMP_CAPACITY});
+CB_THREAD_LOCAL CB_Arena cb__temp_arena = {0, 0, CB_TEMP_CAPACITY};
 
 CBDEF void* cb_temp_alloc(size_t size) { return cb_arena_alloc(&cb__temp_arena, size); }
 CBDEF char* cb_temp_strdup(const char* cstr) { return cb_arena_strdup(&cb__temp_arena, cstr); }
@@ -1167,140 +1946,285 @@ CBDEF char* cb_temp_sprintf(const char* fmt, ...)
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-// Dynamic Array
+// Logger / Panic
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-typedef struct {
-    const char** items;
-    size_t count;
-    size_t capacity;
-} CB_DArray;
+CB_Log_Level cb_minimal_log_level = CB_INFO;
+CB_Log_Handler* cb_log_handler = &cb_default_log_handler;
 
-#ifndef CB_DA_INIT_CAP
-#define CB_DA_INIT_CAP 256
-#endif // !CB_DA_INIT_CAP
+// ---- definitions ----
+CBDEF void cb__panicf(const char* file, int line, const char* label, const char* format, ...)
+{
+    fprintf(stderr, "%s:%d: %s: ", file, line, label);
+    va_list args;
+    va_start(args, format);
+    vfprintf(stderr, format, args);
+    va_end(args);
+    fprintf(stderr, "\n");
 
-#define cb_da_free(da) CB_FREE((da).items)
+#if CB_PANIC_BACKTRACE
+    {
+        void* frames[32];
+        int count = backtrace(frames, (int)CB_ARRAY_LEN(frames));
+        fprintf(stderr, "--- backtrace (%d frames) ---\n", count);
+        backtrace_symbols_fd(frames, count, 2); // fd 2 is stderr
+    }
+#endif // CB_PANIC_BACKTRACE
 
-#define cb_da_reserve(da, new_capacity)                                                                                 \
-    do {                                                                                                                \
-        if ((new_capacity) > (da)->capacity) {                                                                          \
-            if ((da)->capacity == 0)                                                                                    \
-                (da)->capacity = CB_DA_INIT_CAP;                                                                        \
-            while ((new_capacity) > (da)->capacity) {                                                                   \
-                (da)->capacity *= 2;                                                                                    \
-            }                                                                                                           \
-            (da)->items = CB_DECLTYPE_CAST((da)->items) CB_REALLOC((da)->items, (da)->capacity * sizeof(*(da)->items)); \
-            cb_alloc_check((da)->items, (da)->capacity * sizeof(*(da)->items));                                        \
-        }                                                                                                               \
-    } while (0)
+    abort();
+}
 
-#define cb_da_append(da, data)                \
-    do {                                      \
-        cb_da_reserve((da), (da)->count + 1); \
-        (da)->items[(da)->count++] = (data);  \
-    } while (0)
+CBDEF void cb_log(CB_Log_Level level, const char* fmt, ...)
+{
+    va_list args;
+    va_start(args, fmt);
+    cb_log_handler(level, NULL, 0, fmt, args);
+    va_end(args);
+}
 
+CBDEF void cb_log_at(CB_Log_Level level, const char* file, int line, const char* fmt, ...)
+{
+    va_list args;
+    va_start(args, fmt);
+    cb_log_handler(level, file, line, fmt, args);
+    va_end(args);
+}
 
-#define cb_da_append_many(da, new_items, new_items_count)                                              \
-    do {                                                                                               \
-        size_t cb__n = (size_t)(new_items_count);                                                      \
-        /* n == 0 时 new_items 允许是 NULL，必须整个跳过（否则是 UB）                             */    \
-        if (cb__n > 0) {                                                                               \
-            const char* cb__src = (const char*)(new_items);                                            \
-            /* 自我追加：源就在目标缓冲区里，realloc 搬走后原指针会失效，且区间重叠 */                 \
-            bool cb__self = (da)->items != NULL &&                                                     \
-                            cb__src >= (const char*)(da)->items &&                                      \
-                            cb__src < (const char*)(da)->items + (da)->count * sizeof(*(da)->items);   \
-            size_t cb__off = cb__self ? (size_t)(cb__src - (const char*)(da)->items) : 0;              \
-            cb_da_reserve((da), (da)->count + cb__n);                                                  \
-            if (cb__self) cb__src = (const char*)(da)->items + cb__off;                                \
-            memmove((da)->items + (da)->count, cb__src, cb__n * sizeof(*(da)->items));                 \
-            (da)->count += cb__n;                                                                      \
-        }                                                                                              \
-    } while (0)
+CBDEF void cb_set_log_handler(CB_Log_Handler* handler)
+{
+    cb_log_handler = handler;
+}
 
-#define cb_da_resize(da, new_size)     \
-    do {                               \
-        cb_da_reserve((da), new_size); \
-        (da)->count = (new_size);      \
-    } while (0)
+CBDEF CB_Log_Handler* cb_get_log_handler(void)
+{
+    return cb_log_handler;
+}
 
-#define cb_da_pop(da) (da)->items[(CB_ASSERT((da)->count > 0), --(da)->count)]
-#define cb_da_first(da) (da)->items[(CB_ASSERT((da)->count > 0), 0)]
-#define cb_da_last(da) (da)->items[(CB_ASSERT((da)->count > 0), (da)->count - 1)]
-// 用最后一个元素覆盖被删元素（不保序）
-#define cb_da_remove_unordered(da, i)                \
-    do {                                             \
-        size_t j = (i);                              \
-        CB_ASSERT(j < (da)->count);                  \
-        (da)->items[j] = (da)->items[--(da)->count]; \
-    } while (0);
+CBDEF void cb_default_log_handler(CB_Log_Level level, const char* file, int line, const char* fmt, va_list args)
+{
+    if (level < cb_minimal_log_level) return;
 
-#define cb_da_foreach(Type, it, da) \
-    for (Type* it = (da)->items; it < (da)->items + (da)->count; ++it)
+    const char* prefix = NULL;
+    switch (level) {
+    case CB_INFO:    prefix = "[INFO] ";  break;
+    case CB_WARN:    prefix = "[WARN] ";  break;
+    case CB_ERROR:   prefix = "[ERROR] "; break;
+    case CB_NO_LOGS: return;
+    default: CB_UNREACHABLE("CB_Log_Level");
+    }
 
-// 清空内容但保留已分配的内存（供下次复用）
-#define cb_da_clear(da) ((da)->count = 0)
+    // Render the whole line into temp storage first and write it with a single fprintf, so
+    // concurrent writers cannot interleave inside one message.
+    CB_Arena_Mark mark = cb_temp_save();
+    const char* msg = cb_temp_vsprintf(fmt, args);
+    if (file != NULL) fprintf(stderr, "%s%s:%d: %s\n", prefix, file, line, msg);
+    else              fprintf(stderr, "%s%s\n", prefix, msg);
+    cb_temp_rewind(mark);
+}
 
-// 在 index 处插入一个元素，后面的元素整体后移
-#define cb_da_insert(da, index, data)                                      \
-    do {                                                                   \
-        size_t cb__i = (index);                                            \
-        CB_ASSERT(cb__i <= (da)->count);                                    \
-        cb_da_reserve((da), (da)->count + 1);                               \
-        memmove((da)->items + cb__i + 1, (da)->items + cb__i,               \
-                ((da)->count - cb__i) * sizeof(*(da)->items));               \
-        (da)->items[cb__i] = (data);                                        \
-        (da)->count += 1;                                                   \
-    } while (0)
+CBDEF void cb_cancer_log_handler(CB_Log_Level level, const char* file, int line, const char* fmt, va_list args)
+{
+    if (level < cb_minimal_log_level) return;
 
-// 按序删除（保留其余元素的相对顺序）。元素很大且不关心顺序时用 cb_da_remove_unordered。
-#define cb_da_remove_ordered(da, index)                                    \
-    do {                                                                   \
-        size_t cb__i = (index);                                            \
-        CB_ASSERT(cb__i < (da)->count);                                     \
-        memmove((da)->items + cb__i, (da)->items + cb__i + 1,               \
-                ((da)->count - cb__i - 1) * sizeof(*(da)->items));           \
-        (da)->count -= 1;                                                   \
-    } while (0)
+    // Emoji and colors only when stderr is a terminal: redirected output and recorded test
+    // baselines stay plain text.
+#ifdef _WIN32
+    bool color = _isatty(_fileno(stderr)) != 0;
+#else
+    bool color = isatty(fileno(stderr)) != 0;
+#endif
 
-// 反向遍历（count 为 0 时用 items 本身，不做 items-1 的指针运算）
-#define cb_da_foreach_rev(Type, it, da)                                    \
-    for (Type* it = ((da)->count > 0 ? (da)->items + (da)->count - 1 : (da)->items); \
-         (da)->count > 0 && it >= (da)->items; --it)
+    const char* prefix = NULL;
+    switch (level) {
+    case CB_INFO:    prefix = color ? "ℹ️ \x1b[36m[INFO]\x1b[0m "  : "[INFO] ";  break;
+    case CB_WARN:    prefix = color ? "⚠️ \x1b[33m[WARN]\x1b[0m "  : "[WARN] ";  break;
+    case CB_ERROR:   prefix = color ? "🚨 \x1b[31m[ERROR]\x1b[0m " : "[ERROR] "; break;
+    case CB_NO_LOGS: return;
+    default: CB_UNREACHABLE("CB_Log_Level");
+    }
+
+    CB_Arena_Mark mark = cb_temp_save();
+    const char* msg = cb_temp_vsprintf(fmt, args);
+    if (file != NULL) fprintf(stderr, "%s%s:%d: %s\n", prefix, file, line, msg);
+    else              fprintf(stderr, "%s%s\n", prefix, msg);
+    cb_temp_rewind(mark);
+}
+
+CBDEF void cb_null_log_handler(CB_Log_Level level, const char* file, int line, const char* fmt, va_list args)
+{
+    CB_UNUSED(level);
+    CB_UNUSED(file);
+    CB_UNUSED(line);
+    CB_UNUSED(fmt);
+    CB_UNUSED(args);
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// Timer
+////////////////////////////////////////////////////////////////////////////////////////////////////
+CB_Timer cb_timer = CB_ZERO;
+
+// ---- definitions ----
+#ifdef _WIN32
+
+// Note: on Windows cb_get_time_us costs about 53ns per call, more than twice the 22ns of Linux;
+// that is the price of QueryPerformanceCounter itself.
+CBDEF double cb_get_time_ms(void)
+{
+    LARGE_INTEGER freq, count;
+    QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&count);
+    return (double)count.QuadPart * 1000 / freq.QuadPart;
+}
+CBDEF double cb_get_time_us(void)
+{
+    LARGE_INTEGER freq, count;
+    QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&count);
+    return (double)count.QuadPart * 1000000 / freq.QuadPart;
+}
+#else
+
+// Monotonic clock: gettimeofday is wall-clock time and jumps when NTP or the user adjusts it.
+CBDEF double cb_get_time_ms(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1000000.0;
+}
+CBDEF double cb_get_time_us(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec * 1000000.0 + (double)ts.tv_nsec / 1000.0;
+}
+#endif // _WIN32
+
+CBDEF void cb_timer_begin(const char* name)
+{
+    if (cb_timer.sp >= CB_TIMER_MAX_DEPTH) {
+        cb__panicf(__FILE__, __LINE__, "CB_TIMER",
+                   "timer nesting exceeded %d levels: a CB_TIMER_START has no matching CB_TIMER_END",
+                   (int)CB_TIMER_MAX_DEPTH);
+    }
+    cb_timer.stack[cb_timer.sp].name = name;
+    cb_timer.stack[cb_timer.sp].start = cb_get_time_us();
+    cb_timer.sp += 1;
+}
+
+CBDEF double cb_timer_end(void)
+{
+    if (cb_timer.sp == 0) {
+        cb__panicf(__FILE__, __LINE__, "CB_TIMER", "CB_TIMER_END without a matching CB_TIMER_START: the timer stack is empty");
+    }
+    cb_timer.sp -= 1;
+    return cb_get_time_us() - cb_timer.stack[cb_timer.sp].start;
+}
+
+// Nanosecond monotonic timestamp, same semantics as cb_get_time_us but finer grained.
+// The epoch is unspecified: only differences between two stamps are meaningful.
+CBDEF uint64_t cb_nanos_since_unspecified_epoch(void)
+{
+#ifdef _WIN32
+    LARGE_INTEGER now, freq;
+    QueryPerformanceCounter(&now);
+    QueryPerformanceFrequency(&freq);
+    // Split into whole seconds and the remainder: multiplying the raw tick count by 1e9 would
+    // overflow 64 bits after a few minutes of uptime on a 10MHz counter.
+    uint64_t secs = (uint64_t)(now.QuadPart / freq.QuadPart);
+    uint64_t rest = (uint64_t)(now.QuadPart % freq.QuadPart);
+    return secs * CB_NANOS_PER_SEC + rest * CB_NANOS_PER_SEC / (uint64_t)freq.QuadPart;
+#else
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * CB_NANOS_PER_SEC + (uint64_t)ts.tv_nsec;
+#endif // _WIN32
+}
+
+CBDEF CB_Timer_Stat* cb_timer_get_stat(const char* name)
+{
+    for (size_t i = 0; i < cb_timer.stats_count; ++i) {
+        if (strcmp(cb_timer.stats[i].name, name) == 0) return &cb_timer.stats[i];
+    }
+
+    if (cb_timer.stats_count == cb_timer.stats_capacity) {
+        size_t new_capacity = cb_timer.stats_capacity == 0 ? 16 : cb_timer.stats_capacity * 2;
+        size_t bytes = new_capacity * sizeof(*cb_timer.stats);
+        cb_timer.stats = (CB_Timer_Stat*)CB_REALLOC(cb_timer.stats, bytes);
+        cb_alloc_check(cb_timer.stats, bytes);
+        cb_timer.stats_capacity = new_capacity;
+    }
+
+    CB_Timer_Stat* stat = &cb_timer.stats[cb_timer.stats_count++];
+    stat->name = name;
+    stat->total = 0;
+    stat->count = 0;
+    stat->min = 0;
+    stat->max = 0;
+    return stat;
+}
+
+CBDEF double cb_timer_end_stat(void)
+{
+    double elapsed = cb_timer_end();
+    // cb_timer_end() already popped the stack, so stack[sp] is the frame that just ended.
+    CB_Timer_Stat* stat = cb_timer_get_stat(cb_timer.stack[cb_timer.sp].name);
+    stat->total += elapsed;
+    stat->count += 1;
+    if (stat->count == 1) {
+        stat->min = elapsed;
+        stat->max = elapsed;
+    } else {
+        if (elapsed < stat->min) stat->min = elapsed;
+        if (elapsed > stat->max) stat->max = elapsed;
+    }
+    return elapsed;
+}
+
+CBDEF void cb_timer_end_print(void)
+{
+    double elapsed = cb_timer_end();
+    fprintf(stderr, "[%s] took %.3f us\n", cb_timer.stack[cb_timer.sp].name, elapsed);
+}
+
+CBDEF void cb_timer_fprint_stats(FILE* out)
+{
+    if (out == NULL) return;
+
+    // Size the name column from the actual content so long names do not skew the table.
+    size_t name_width = strlen("Name");
+    for (size_t i = 0; i < cb_timer.stats_count; ++i) {
+        size_t len = strlen(cb_timer.stats[i].name);
+        if (len > name_width) name_width = len;
+    }
+
+    fprintf(out, "\n========== Timer Statistics ==========\n");
+    fprintf(out, "%-*s %10s %12s %12s %12s %12s\n",
+            (int)name_width, "Name", "Count", "Avg(us)", "Min(us)", "Max(us)", "Total(us)");
+    for (size_t i = 0; i < cb_timer.stats_count; ++i) {
+        CB_Timer_Stat* s = &cb_timer.stats[i];
+        double avg = s->count > 0 ? s->total / (double)s->count : 0.0;
+        fprintf(out, "%-*s %10zu %12.3f %12.3f %12.3f %12.3f\n",
+                (int)name_width, s->name, s->count, avg, s->min, s->max, s->total);
+    }
+    fprintf(out, "========================================\n");
+}
+
+CBDEF void cb_timer_print_stats(void)
+{
+    cb_timer_fprint_stats(stderr);
+}
+
+CBDEF void cb_timer_reset(void)
+{
+    cb_timer.stats_count = 0;
+    cb_timer.sp = 0;
+}
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // Bitset
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-// 定长位图。bits 是位数；内部按 uint64_t 字存储，容量按需增长。
 
-typedef struct {
-    uint64_t* words;
-    size_t word_count;
-    size_t word_capacity;
-    size_t bits;
-} CB_Bitset;
-
-#ifndef CB_BITSET_WORD_BITS
-#define CB_BITSET_WORD_BITS 64
-#endif // !CB_BITSET_WORD_BITS
-
-// ---- 声明 ----
-// 把位数调整为 bits（变大时新增位为 0，变小时直接丢弃高位）
-CBDEF void cb_bitset_resize(CB_Bitset* bs, size_t bits);
-CBDEF void cb_bitset_set(CB_Bitset* bs, size_t index);
-CBDEF void cb_bitset_unset(CB_Bitset* bs, size_t index);
-CBDEF void cb_bitset_toggle(CB_Bitset* bs, size_t index);
-CBDEF bool cb_bitset_test(const CB_Bitset* bs, size_t index);
-// 全部置 0（保留已分配内存）
-CBDEF void cb_bitset_clear_all(CB_Bitset* bs);
-// 值等于 target 的位数统计
-CBDEF size_t cb_bitset_count(const CB_Bitset* bs, bool target);
-// 第一个值为 target 的位的下标；没有则返回 (size_t)-1
-CBDEF size_t cb_bitset_find(const CB_Bitset* bs, bool target);
-CBDEF void cb_bitset_free(CB_Bitset* bs);
-
-// ---- 定义 ----
+// ---- definitions ----
 CBDEF void cb_bitset_resize(CB_Bitset* bs, size_t bits)
 {
     size_t need_words = (bits + CB_BITSET_WORD_BITS - 1) / CB_BITSET_WORD_BITS;
@@ -1312,7 +2236,7 @@ CBDEF void cb_bitset_resize(CB_Bitset* bs, size_t bits)
         cb_alloc_check(bs->words, bytes);
         bs->word_capacity = new_capacity;
     }
-    // 新增的字清零（缩小时只清多出来的字，便于再次扩大时是干净的）
+    // Growing: clear the words that were just added.\n    // Shrinking: clear the words that are dropped, so growing again starts clean.
     for (size_t i = bs->word_count; i < need_words; ++i) bs->words[i] = 0;
     for (size_t i = need_words; i < bs->word_count; ++i) bs->words[i] = 0;
     bs->word_count = need_words;
@@ -1377,31 +2301,8 @@ CBDEF void cb_bitset_free(CB_Bitset* bs)
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // Ring Buffer
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-// 字节环形缓冲，FIFO。容量固定、不自动增长：写满就只写能写下的部分并返回实写字节数。
 
-typedef struct {
-    unsigned char* data;
-    size_t capacity;
-    size_t read_pos;
-    size_t write_pos;
-    size_t count; // 当前可读字节数
-} CB_Ring;
-
-// ---- 声明 ----
-CBDEF bool cb_ring_init(CB_Ring* ring, size_t capacity);
-CBDEF void cb_ring_free(CB_Ring* ring);
-// 还能写入多少字节
-CBDEF size_t cb_ring_space(const CB_Ring* ring);
-// 写入，返回实际写入的字节数
-CBDEF size_t cb_ring_write(CB_Ring* ring, const void* data, size_t size);
-// 读出，返回实际读出的字节数
-CBDEF size_t cb_ring_read(CB_Ring* ring, void* out, size_t size);
-// 只看不取，返回实际拷贝的字节数
-CBDEF size_t cb_ring_peek(const CB_Ring* ring, void* out, size_t size);
-// 丢弃全部数据（不释放内存）
-CBDEF void cb_ring_clear(CB_Ring* ring);
-
-// ---- 定义 ----
+// ---- definitions ----
 CBDEF bool cb_ring_init(CB_Ring* ring, size_t capacity)
 {
     memset(ring, 0, sizeof(*ring));
@@ -1476,21 +2377,8 @@ CBDEF void cb_ring_clear(CB_Ring* ring)
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // Sort
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-// 作用于任何 {items,count,capacity} 动态数组。
-// cb_da_sort 走 qsort：快，但不稳定（相等元素的相对顺序不保证）。
-// cb_da_sort_insertion 稳定，且对"几乎有序"的数组极快，适合小数组。
 
-typedef int (*CB_Compare_Func)(const void* a, const void* b);
-
-// ---- 声明 ----
-// 稳定插入排序。为了让函数能按字节搬动元素，需要元素大小。
-CBDEF void cb__insertion_sort(void* items, size_t count, size_t elem_size, CB_Compare_Func cmp);
-
-#define cb_da_sort(da, cmp) qsort((da)->items, (da)->count, sizeof(*(da)->items), (cmp))
-#define cb_da_sort_insertion(da, cmp) \
-    cb__insertion_sort((da)->items, (da)->count, sizeof(*(da)->items), (cmp))
-
-// ---- 定义 ----
+// ---- definitions ----
 CBDEF void cb__insertion_sort(void* items, size_t count, size_t elem_size, CB_Compare_Func cmp)
 {
     if (count < 2) return;
@@ -1515,57 +2403,6 @@ CBDEF void cb__insertion_sort(void* items, size_t count, size_t elem_size, CB_Co
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // StringBuilder
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-typedef struct {
-    char* items;
-    size_t count;
-    size_t capacity;
-} CB_String_Builder;
-
-// StringBuilder 的**核心约定**：items 永远是一个合法的 C 字符串。
-// 每次追加都会在 items[count] 补 '\0'，容量按 count+1 算（count 不含这个终止符），
-// 所以 cb_sb_to_sv / printf("%s") / strstr 任何时刻都安全，调用方不需要记得补 NUL。
-// 想在内容里塞 '\0'，用 cb_sb_append(&sb, '\0')——那是内容，不是终止符。
-CBDEF void cb__sb_terminate(CB_String_Builder* sb);
-
-// TODO: may need to add a buffer version, more safe for memory.
-CBDEF bool cb_read_entire_file(const char* path, CB_String_Builder* sb);
-CBDEF int cb_sb_appendf(CB_String_Builder* sb, const char* fmt, ...) CB_PRINTF_FORMAT(2, 3);
-// 用 0 把 sb 补齐到 word_size 的整数倍（构造二进制格式时用）。
-// 例：内容 "aaaaa" 按 4 对齐 → "aaaaa000"。
-CBDEF void cb_sb_pad_align(CB_String_Builder* sb, size_t size);
-
-// 追加一段定长缓冲
-#define cb_sb_append_buf(sb, buf, size)         \
-    do {                                        \
-        cb_da_append_many((sb), (buf), (size)); \
-        cb__sb_terminate(sb);                   \
-    } while (0)
-
-// 追加一个 StringView
-#define cb_sb_append_sv(sb, sv) cb_sb_append_buf((sb), (sv).data, (sv).count)
-
-// 追加一个 C 字符串
-#define cb_sb_append_cstr(sb, cstr)                    \
-    do {                                               \
-        const char* cb__s = (cstr);                    \
-        cb_sb_append_buf((sb), cb__s, strlen(cb__s));  \
-    } while (0)
-
-// 追加一个字符
-#define cb_sb_append(sb, ch)                 \
-    do {                                     \
-        char cb__ch = (char)(ch);            \
-        cb_sb_append_buf((sb), &cb__ch, 1);  \
-    } while (0)
-
-// 释放内存并把字段清零，避免留下悬垂指针
-#define cb_sb_free(sb)          \
-    do {                        \
-        CB_FREE((sb).items);    \
-        (sb).items = NULL;      \
-        (sb).count = 0;         \
-        (sb).capacity = 0;      \
-    } while (0)
 
 CBDEF bool cb_read_entire_file(const char* path, CB_String_Builder* sb)
 {
@@ -1596,11 +2433,11 @@ CBDEF bool cb_read_entire_file(const char* path, CB_String_Builder* sb)
     }
 
     if (fread(sb->items + sb->count, (size_t)filesize, 1, file) != 1 && filesize > 0) {
-        // ferror 不设置 errno，下面 defer 里的错误信息可能不准确
+// ferror does not set errno, so the message in the defer block may be inaccurate.
         cb_return_defer(false);
     }
     sb->count = new_count;
-    sb->items[sb->count] = '\0'; // 读进来的内容直接就能当 C 字符串用
+    sb->items[sb->count] = '\0'; // the bytes read can be used as a C string right away
 
 defer:
     if (!result) cb_log(CB_ERROR, "Could not read file %s: %s", path, strerror(errno));
@@ -1645,81 +2482,6 @@ CBDEF void cb_sb_pad_align(CB_String_Builder* sb, size_t size)
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // StringView
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-typedef struct {
-    const char* data;
-    size_t count;
-} CB_String_View;
-
-// printf 打印 StringView 用的宏
-#ifndef CB_SV_FMT
-// 编译期构造 String_View 字面量，比 cb_sv_from_cstr("...") 少一次 strlen。
-// designator 必须按 CB_String_View 的声明顺序（data 在前、count 在后）：C 允许乱序，
-// C++ 是硬错误 "designator order for field does not match declaration order"。
-#define CB_SVLIT(lit) (CB_CLIT(CB_String_View){.data = (lit), .count = sizeof(lit) - 1})
-// 静态初始化版本（MSVC 的 /TC 模式不接受上面那种复合字面量写法时用它）
-#define CB_SVLIT_STATIC(lit) {.data = (lit), .count = sizeof(lit) - 1}
-
-#define CB_SV_FMT "%.*s"
-#endif // CB_SV_FMT
-#ifndef CB_SV_ARG
-#define CB_SV_ARG(sv) (int)(sv).count, (sv).data
-#endif // CB_SV_ARG
-// USAGE:
-//   CB_String_View name = ...;
-//   printf("Name: "CB_SV_FMT"\n", CB_SV_ARG(name));
-
-// StringView 复制到 temp storage
-CBDEF const char* cb_sv_to_temp_cstr(CB_String_View sv);
-
-CBDEF bool cb_sv_eq(CB_String_View a, CB_String_View b);
-
-CBDEF CB_String_View cb_sv_from_parts(const char* data, size_t count);
-CBDEF CB_String_View cb_sv_from_cstr(const char* cstr);
-
-// StringBuilder 转 StringView
-#define cb_sb_to_sv(sb) cb_sv_from_parts((sb).items, (sb).count)
-
-// 切到 p(当前字符) 返回假为止，返回切下来的前缀，sv 前移到剩下的部分。
-// 例：CB_String_View sv = cb_sv_from_cstr("  123abc456");
-//     cb_sv_chop_by_func(&sv, isspace) → "  "，sv = "123abc456"
-//     cb_sv_chop_by_func(&sv, isdigit) → "123"，sv = "abc456"
-// 前移视图。空视图的 data 允许是 NULL，而 NULL + 0 在 C 标准里是 UB
-//（UBSan: "applying zero offset to null pointer"，clang 18 会报），所以 n == 0 直接跳过。
-#define cb__sv_advance(sv, n)  \
-    do {                       \
-        if ((n) > 0) {         \
-            (sv)->data += (n); \
-            (sv)->count -= (n);\
-        }                      \
-    } while (0)
-
-CBDEF CB_String_View cb_sv_chop_by_func(CB_String_View* sv, int (*p)(int x));
-// 切到 delim 之前，返回切下来的部分，并丢弃这个 delim 字符。
-// 例：CB_String_View sv = cb_sv_from_cstr("  1223abc456");
-//     cb_sv_chop_by_delim(&sv, '2') → "  1"，sv = "23abc456"
-CBDEF CB_String_View cb_sv_chop_by_delim(CB_String_View* sv, char delim);
-CBDEF CB_String_View cb_sv_chop_by_delim_r(CB_String_View* sv, char delim);
-CBDEF CB_String_View cb_sv_chop_left(CB_String_View* sv, size_t n);
-CBDEF CB_String_View cb_sv_chop_right(CB_String_View* sv, size_t n);
-
-// 有该前缀/后缀返回 true，否则返回 false
-CBDEF bool cb_sv_ends_with(CB_String_View sv, CB_String_View suffix);
-CBDEF bool cb_sv_ends_with_cstr(CB_String_View sv, const char* suffix);
-CBDEF bool cb_sv_starts_with(CB_String_View sv, CB_String_View prefix);
-CBDEF bool cb_sv_starts_with_cstr(CB_String_View sv, const char* prefix);
-
-// 有该前缀就切掉并返回 true，否则返回 false
-CBDEF bool cb_sv_chop_prefix(CB_String_View* sv, CB_String_View prefix);
-// 以该后缀结尾就切掉并返回 true，否则返回 false
-CBDEF bool cb_sv_chop_suffix(CB_String_View* sv, CB_String_View suffix);
-
-// 返回去掉首尾空白后的新视图，不修改原视图
-CBDEF CB_String_View cb_sv_trim_left(CB_String_View sv);
-CBDEF CB_String_View cb_sv_trim_right(CB_String_View sv);
-CBDEF CB_String_View cb_sv_trim(CB_String_View sv);
-
-CBDEF int cb_sv_find(CB_String_View* sv, char ch);
-CBDEF int cb_sv_find_sv(CB_String_View* sv, CB_String_View target, size_t start_offset);
 
 CBDEF const char* cb_sv_to_temp_cstr(CB_String_View sv)
 {
@@ -1731,7 +2493,7 @@ CBDEF bool cb_sv_eq(CB_String_View a, CB_String_View b)
     if (a.count != b.count) {
         return false;
     } else if (a.count == 0) {
-        // 两个空视图：data 允许是 NULL，memcmp(NULL, NULL, 0) 是 UB，单独挡住
+// Two empty views: data may be NULL and memcmp(NULL, NULL, 0) is UB, so handle it separately.
         return true;
     } else {
         return memcmp(a.data, b.data, a.count) == 0;
@@ -1778,21 +2540,21 @@ CBDEF CB_String_View cb_sv_chop_by_delim(CB_String_View* sv, char delim)
     return result;
 }
 
-// 从右边找【最后一个】delim：返回 delim 之前的部分，sv 变成 delim 之后的部分；
-// 没有 delim 时返回整个 sv 并把 sv 清空。
+// Find the LAST delim from the right: return the part before it and leave sv with the part after
+// it; without a delimiter the whole view is returned and sv becomes empty.
 CBDEF CB_String_View cb_sv_chop_by_delim_r(CB_String_View* sv, char delim)
 {
     size_t i = sv->count;
     while (i > 0 && sv->data[i - 1] != delim) i -= 1;
 
     if (i == 0) {
-        // 没有分隔符：整体返回，原视图清空
+// No delimiter: return everything and empty the original view.
         CB_String_View whole = cb_sv_from_parts(sv->data, sv->count);
         cb__sv_advance(sv, sv->count);
         return whole;
     }
 
-    size_t delim_index = i - 1; // i 是"分隔符下标 + 1"
+    size_t delim_index = i - 1; // i is "delimiter index + 1"
     CB_String_View result = cb_sv_from_parts(sv->data, delim_index);
     cb__sv_advance(sv, delim_index + 1);
     return result;
@@ -1816,7 +2578,7 @@ CBDEF CB_String_View cb_sv_chop_right(CB_String_View* sv, size_t n)
         n = sv->count;
     }
 
-    // n == 0 时不要写 sv->data + sv->count - 0（空视图的 data 可能是 NULL）
+// With n == 0 do not compute sv->data + sv->count - 0 (an empty view may have data == NULL).
     CB_String_View result = cb_sv_from_parts(n > 0 ? sv->data + sv->count - n : sv->data, n);
     sv->count -= n;
 
@@ -1828,8 +2590,8 @@ CBDEF bool cb_sv_ends_with(CB_String_View sv, CB_String_View suffix)
     if (suffix.count > sv.count) {
         return false;
     }
-    // 空后缀：任何视图都以它结尾。单独挡住这一支也避免对 NULL 做指针运算
-    // （sv.count == 0 时 sv.data 允许是 NULL，而 NULL + 0 按标准是 UB）。
+// An empty suffix matches every view; handling it separately also avoids pointer arithmetic on
+// NULL (sv.data may be NULL when sv.count == 0, and NULL + 0 is UB by the standard).
     if (suffix.count == 0) {
         return true;
     }
@@ -1929,7 +2691,7 @@ CBDEF int cb_sv_find_sv(CB_String_View* sv, CB_String_View target, size_t start_
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // UTF-8 Support
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-static const uint8_t cb_bytes_for_utf8[] = {
+const uint8_t cb_bytes_for_utf8[] = {
     1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1, 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
     1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1, 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
     1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1, 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
@@ -1939,8 +2701,6 @@ static const uint8_t cb_bytes_for_utf8[] = {
     2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2, 2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,
     3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3, 4,4,4,4,4,4,4,4,5,5,5,5,6,6,6,6,
 };
-
-CBDEF size_t cb_sv_utf8_len(CB_String_View sv, size_t* bytes_overrun);
 
 CBDEF size_t cb_sv_utf8_len(CB_String_View sv, size_t* bytes_overrun)
 {
@@ -1959,36 +2719,10 @@ CBDEF size_t cb_sv_utf8_len(CB_String_View sv, size_t* bytes_overrun)
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-// StringView Tools（大小写 / 数字解析 / split-join）
+// StringView Tools
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-// ---- 声明 ----
-// 大小写转换（结果在 temp storage 上）
-CBDEF char* cb_sv_to_temp_upper(CB_String_View sv);
-CBDEF char* cb_sv_to_temp_lower(CB_String_View sv);
-CBDEF bool cb_sv_eq_ignore_case(CB_String_View a, CB_String_View b);
 
-// 数字解析：严格解析，允许首尾空白；成功返回 true 并写 *out，失败返回 false 且不动 *out。
-// 支持 0x/0X 十六进制、0b/0B 二进制、0o/0O 八进制前缀；整数不识别小数点与指数。
-CBDEF bool cb_sv_to_i64(CB_String_View sv, int64_t* out);
-CBDEF bool cb_sv_to_u64(CB_String_View sv, uint64_t* out);
-CBDEF bool cb_sv_to_f64(CB_String_View sv, double* out);
-
-// 逐个取出被 delim 分隔的片段，sv 会被就地消耗。
-// 例：while (cb_sv_split_next(&sv, ',', &part)) { ... }
-CBDEF bool cb_sv_split_next(CB_String_View* sv, char delim, CB_String_View* out);
-// 用 sep 把 parts 连接起来追加到 sb（不追加结尾分隔符）
-CBDEF void cb_sb_append_join(CB_String_Builder* sb, const CB_String_View* parts, size_t count, CB_String_View sep);
-
-// utf8：解码一个码点
-CBDEF bool cb_utf8_decode(const char* data, size_t size, uint32_t* out_codepoint, size_t* out_length);
-// 编码一个码点，写入 out（至少 4 字节），返回写入长度；非法码点返回 0
-CBDEF size_t cb_utf8_encode(uint32_t codepoint, char out[4]);
-// 从 sv 头部取一个码点并前移 sv
-CBDEF bool cb_sv_utf8_next(CB_String_View* sv, uint32_t* out_codepoint);
-// 校验整段是否为合法 utf8；非法时通过 out_bad_offset 给出出错的下标
-CBDEF bool cb_utf8_validate(CB_String_View sv, size_t* out_bad_offset);
-
-// ---- 定义 ----
+// ---- definitions ----
 CBDEF char* cb_sv_to_temp_upper(CB_String_View sv)
 {
     char* result = cb_temp_strndup(sv.data, sv.count);
@@ -2012,7 +2746,7 @@ CBDEF bool cb_sv_eq_ignore_case(CB_String_View a, CB_String_View b)
     return true;
 }
 
-// 内部：去掉首尾空白、解析可选符号与进制前缀
+// Internal: trim, then parse the optional sign and the base prefix.
 CBDEF bool cb__sv_number_parts(CB_String_View sv, CB_String_View* out_digits, int* out_base, bool* out_negative)
 {
     sv = cb_sv_trim(sv);
@@ -2072,14 +2806,14 @@ CBDEF bool cb_sv_to_u64(CB_String_View sv, uint64_t* out)
     int base = 10;
     bool negative = false;
     if (!cb__sv_number_parts(sv, &digits, &base, &negative)) return false;
-    if (negative) return false; // 无符号不接受负号
+    if (negative) return false; // unsigned does not accept a minus sign
 
     uint64_t value = 0;
     for (size_t i = 0; i < digits.count; ++i) {
         int d;
-        if (digits.data[i] == '_') continue; // 允许 1_000_000 这种写法
+        if (digits.data[i] == '_') continue; // allow 1_000_000
         if (!cb__sv_digit_value(digits.data[i], base, &d)) return false;
-        if (value > (UINT64_MAX - (uint64_t)d) / (uint64_t)base) return false; // 溢出
+        if (value > (UINT64_MAX - (uint64_t)d) / (uint64_t)base) return false; // overflow
         value = value * (uint64_t)base + (uint64_t)d;
     }
     *out = value;
@@ -2099,7 +2833,7 @@ CBDEF bool cb_sv_to_i64(CB_String_View sv, int64_t* out)
         int d;
         if (digits.data[i] == '_') continue;
         if (!cb__sv_digit_value(digits.data[i], base, &d)) return false;
-        if (magnitude > (limit - (uint64_t)d) / (uint64_t)base) return false; // 溢出
+        if (magnitude > (limit - (uint64_t)d) / (uint64_t)base) return false; // overflow
         magnitude = magnitude * (uint64_t)base + (uint64_t)d;
     }
 
@@ -2118,14 +2852,14 @@ CBDEF bool cb_sv_to_f64(CB_String_View sv, double* out)
     sv = cb_sv_trim(sv);
     if (sv.count == 0) return false;
 
-    // 浮点的语法规则繁琐，交给 strtod，先复制成 NUL 结尾的临时串
+// Floating-point syntax is messy, so hand it to strtod on a NUL-terminated temp copy.
     char* cstr = cb_temp_strndup(sv.data, sv.count);
     errno = 0;
     char* end = NULL;
     double value = strtod(cstr, &end);
-    if (end == cstr) return false;            // 一个字符都没解析出来
-    if (end != cstr + sv.count) return false; // 有残留，说明不是纯数字
-    if (errno == ERANGE) return false;        // 溢出/下溢
+    if (end == cstr) return false;            // nothing was parsed
+    if (end != cstr + sv.count) return false; // trailing garbage means it is not a pure number
+    if (errno == ERANGE) return false;        // overflow or underflow
     *out = value;
     return true;
 }
@@ -2152,9 +2886,9 @@ CBDEF bool cb_utf8_decode(const char* data, size_t size, uint32_t* out_codepoint
     const unsigned char* bytes = (const unsigned char*)data;
     unsigned char first = bytes[0];
 
-    // 续字节 0x80-0xBF 不能当首字节，必须显式挡掉：cb_bytes_for_utf8[0x80..0xBF] 是 1
-    // （表值不能改成 0——cb_sv_utf8_len 里 i += 0 会死循环），不挡的话孤立的续字节
-    // 会被当成合法的单字节字符 U+0080。
+// Continuation bytes 0x80-0xBF must be rejected as leading bytes: the table maps them to 1,
+// and it cannot be changed to 0 (cb_sv_utf8_len would loop forever on i += 0). Without this
+// check a stray continuation byte would pass as the single-byte character U+0080.
     if (first >= 0x80 && first <= 0xBF) return false;
 
     size_t length = cb_bytes_for_utf8[first];
@@ -2169,12 +2903,12 @@ CBDEF bool cb_utf8_decode(const char* data, size_t size, uint32_t* out_codepoint
 
         codepoint = first & first_mask[length];
         for (size_t i = 1; i < length; ++i) {
-            if ((bytes[i] & 0xC0) != 0x80) return false; // 后续字节必须是 10xxxxxx
+            if ((bytes[i] & 0xC0) != 0x80) return false; // continuation bytes must be 10xxxxxx
             codepoint = (codepoint << 6) | (uint32_t)(bytes[i] & 0x3F);
         }
-        if (codepoint < min_value[length]) return false;              // 过长编码（overlong）
-        if (codepoint > 0x10FFFF) return false;                       // 超出 Unicode 范围
-        if (codepoint >= 0xD800 && codepoint <= 0xDFFF) return false; // 代理区
+        if (codepoint < min_value[length]) return false;              // overlong encoding
+        if (codepoint > 0x10FFFF) return false;                       // outside the Unicode range
+        if (codepoint >= 0xD800 && codepoint <= 0xDFFF) return false; // surrogate range
     }
 
     if (out_codepoint) *out_codepoint = codepoint;
@@ -2235,80 +2969,11 @@ CBDEF bool cb_utf8_validate(CB_String_View sv, size_t* out_bad_offset)
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // HashMap
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-// 开放寻址 + 线性探测。键会被复制进 map，所以调用方不必关心字符串的生命周期。
-//
-// 后端：
-//   - 默认走 CB_REALLOC / CB_FREE
-//   - cb_map_init_arena(&m, &arena, n) 之后全部内存从 arena 取。
-//     注意 arena 不支持单独释放，重哈希产生的旧槽位会留到 cb_arena_reset 一次性回收。
-//
-// 用法：
-//   CB_Map m = CB_ZERO;
-//   cb_map_put_cstr(&m, "answer", (void*)(intptr_t)42);
-//   void* v = NULL;
-//   if (cb_map_get_cstr(&m, "answer", &v)) { ... }
-//   cb_map_foreach(&m, it) { printf("%.*s\n", (int)it.key.count, it.key.data); }
-//   cb_map_free(&m);
 
-#ifndef CB_MAP_INIT_CAPACITY
-#define CB_MAP_INIT_CAPACITY 16
-#endif // !CB_MAP_INIT_CAPACITY
-
-#define CB_MAP_EMPTY 0
-#define CB_MAP_USED 1
-#define CB_MAP_TOMBSTONE 2
-
-typedef struct {
-    CB_String_View key; // key.data 指向 map 自己拷贝的一份
-    void* value;
-    uint64_t hash; // 缓存哈希，重哈希时不必重算
-    uint8_t state;
-} CB_Map_Slot;
-
-typedef struct {
-    CB_Map_Slot* slots;
-    size_t capacity; // 槽位数，始终是 2 的幂；0 表示尚未分配
-    size_t count;    // 活跃条目数
-    size_t tombstones;
-    CB_Arena* arena; // 非 NULL 时所有内存从 arena 取
-} CB_Map;
-
-typedef struct {
-    CB_Map* map;
-    size_t index;
-    CB_String_View key; // 当前条目（由 cb_map_next 填充）
-    void* value;
-} CB_Map_Iter;
-
-// ---- 哈希 ----
-CBDEF uint64_t cb_hash_bytes(const void* data, size_t size);
-CBDEF uint64_t cb_hash_u64(uint64_t value);
-
-// ---- 声明 ----
-CBDEF void cb_map_init_capacity(CB_Map* map, size_t capacity);
-// arena 后端：map 的所有内存都从 arena 取。arena 必须活得比 map 久。
-CBDEF void cb_map_init_arena(CB_Map* map, CB_Arena* arena, size_t capacity);
-// 插入或覆盖（键会被复制）。value 允许为 NULL。
-CBDEF void cb_map_put(CB_Map* map, CB_String_View key, void* value);
-CBDEF void cb_map_put_cstr(CB_Map* map, const char* key, void* value);
-// 查不到返回 false 且不动 *out。out 允许为 NULL（只判断存在性）。
-CBDEF bool cb_map_get(const CB_Map* map, CB_String_View key, void** out);
-CBDEF bool cb_map_get_cstr(const CB_Map* map, const char* key, void** out);
-CBDEF bool cb_map_has(const CB_Map* map, CB_String_View key);
-CBDEF bool cb_map_del(CB_Map* map, CB_String_View key);
-CBDEF size_t cb_map_count(const CB_Map* map);
-// 清空条目但保留已分配容量
-CBDEF void cb_map_clear(CB_Map* map);
-CBDEF void cb_map_free(CB_Map* map);
-CBDEF CB_Map_Iter cb_map_iter(CB_Map* map);
-CBDEF bool cb_map_next(CB_Map_Iter* it);
-#define cb_map_foreach(map, it) \
-    for (CB_Map_Iter it = cb_map_iter(map); cb_map_next(&it);)
-
-// ---- 定义 ----
+// ---- definitions ----
 CBDEF uint64_t cb_hash_bytes(const void* data, size_t size)
 {
-    // FNV-1a 64 位：短键表现好、实现简单
+// FNV-1a 64: good on short keys and trivial to implement.
     const unsigned char* p = (const unsigned char*)data;
     uint64_t hash = 1469598103934665603ull;
     for (size_t i = 0; i < size; ++i) {
@@ -2320,7 +2985,7 @@ CBDEF uint64_t cb_hash_bytes(const void* data, size_t size)
 
 CBDEF uint64_t cb_hash_u64(uint64_t value)
 {
-    // splitmix64 的收尾混合：把顺序整数打散，避免扎堆
+// splitmix64 finalizer: spreads sequential integers so they do not cluster.
     value += 0x9E3779B97F4A7C15ull;
     value = (value ^ (value >> 30)) * 0xBF58476D1CE4E5B9ull;
     value = (value ^ (value >> 27)) * 0x94D049BB133111EBull;
@@ -2337,7 +3002,7 @@ CBDEF void* cb__map_alloc(CB_Map* map, size_t size)
 
 CBDEF void cb__map_dealloc(CB_Map* map, void* ptr)
 {
-    if (map->arena != NULL) return; // arena 不支持单独释放
+    if (map->arena != NULL) return; // the arena cannot free single blocks
     CB_FREE(ptr);
 }
 
@@ -2365,7 +3030,7 @@ CBDEF CB_Map_Slot* cb__map_find_slot(const CB_Map* map, CB_String_View key, uint
     return for_insert ? first_tombstone : NULL;
 }
 
-// 一次性重哈希到指定容量（必须是 2 的幂，且大于现有容量）
+// Rehash everything into a new capacity in one pass (a power of two larger than the current one).
 CBDEF void cb__map_resize_to(CB_Map* map, size_t new_capacity)
 {
     CB_Map_Slot* new_slots = (CB_Map_Slot*)cb__map_alloc(map, new_capacity * sizeof(CB_Map_Slot));
@@ -2381,7 +3046,7 @@ CBDEF void cb__map_resize_to(CB_Map* map, size_t new_capacity)
 
     for (size_t i = 0; i < old_capacity; ++i) {
         if (old_slots[i].state != CB_MAP_USED) continue;
-        // 键内存不复制，直接把指针搬过去
+// Key memory is not copied, only the pointer moves.
         CB_Map_Slot* dst = cb__map_find_slot(map, old_slots[i].key, old_slots[i].hash, true);
         *dst = old_slots[i];
         map->count += 1;
@@ -2390,36 +3055,36 @@ CBDEF void cb__map_resize_to(CB_Map* map, size_t new_capacity)
     if (map->arena == NULL) CB_FREE(old_slots);
 }
 
-// 扩容一步到位（反复 grow 会在 arena 后端留下一串废弃槽位数组）
+// Grow in one step: repeated small grows would leave a trail of abandoned slot arrays.
 CBDEF void cb__map_grow(CB_Map* map)
 {
     cb__map_resize_to(map, map->capacity == 0 ? CB_MAP_INIT_CAPACITY : map->capacity * 2);
 }
 
-// 预分配。map 必须先是零初始化的（CB_ZERO）。
+// Preallocate. The map must be zero-initialized first (CB_ZERO).
 CBDEF void cb_map_init_capacity(CB_Map* map, size_t capacity)
 {
-    CB_ASSERT(map->slots == NULL && map->capacity == 0 && "map 必须先零初始化，且不能重复 init");
+    CB_ASSERT(map->slots == NULL && map->capacity == 0 && "the map must be zero-initialized and initialized only once");
     if (capacity == 0) return;
 
-    // 向上取到 2 的幂，并保证负载因子不超过 3/4
+// Round up to a power of two and keep the load factor at or below 3/4.
     size_t wanted = capacity * 4 / 3 + 1;
     size_t power = CB_MAP_INIT_CAPACITY;
     while (power < wanted) power *= 2;
     cb__map_resize_to(map, power);
 }
 
-// arena 后端。arena 必须活得比 map 久；map 的槽位与键都从这里分配。
+// Arena backend: the arena must outlive the map; slots and keys are allocated from it.
 CBDEF void cb_map_init_arena(CB_Map* map, CB_Arena* arena, size_t capacity)
 {
-    map->arena = arena; // 必须先设，否则初始槽位会走 malloc
+    map->arena = arena; // set first, otherwise the initial slots would go through malloc
     cb_map_init_capacity(map, capacity);
 }
 
 CBDEF void cb_map_put(CB_Map* map, CB_String_View key, void* value)
 {
     if (map->capacity == 0) cb__map_grow(map);
-    // 负载因子（含墓碑）到 3/4 就扩容，保证探测链不会太长
+// Grow once the load factor (tombstones included) reaches 3/4, which keeps probe chains short.
     if ((map->count + map->tombstones + 1) * 4 >= map->capacity * 3) cb__map_grow(map);
 
     uint64_t hash = cb_hash_bytes(key.data, key.count);
@@ -2427,7 +3092,7 @@ CBDEF void cb_map_put(CB_Map* map, CB_String_View key, void* value)
     CB_ASSERT(slot != NULL);
 
     if (slot->state == CB_MAP_USED) {
-        slot->value = value; // 键已存在：只覆盖值，不重复拷贝键
+        slot->value = value; // key already present: overwrite the value, do not copy the key again
         return;
     }
     if (slot->state == CB_MAP_TOMBSTONE) map->tombstones -= 1;
@@ -2510,7 +3175,7 @@ CBDEF void cb_map_free(CB_Map* map)
     map->capacity = 0;
     map->count = 0;
     map->tombstones = 0;
-    map->arena = NULL; // 摘掉 arena，map 变量可以复用
+    map->arena = NULL; // detach the arena so the map variable can be reused
 }
 
 CBDEF CB_Map_Iter cb_map_iter(CB_Map* map)
@@ -2535,49 +3200,10 @@ CBDEF bool cb_map_next(CB_Map_Iter* it)
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-// HashMap：uint64 键版本
+// HashMap (uint64 keys)
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-// 与 CB_Map 同样的开放寻址实现，只是键是整数、哈希与比较更直接。
-// 键内存不需要单独分配，因此比字符串键版本更省。
 
-typedef struct {
-    uint64_t key;
-    void* value;
-    uint64_t hash;
-    uint8_t state;
-} CB_Map_U64_Slot;
-
-typedef struct {
-    CB_Map_U64_Slot* slots;
-    size_t capacity;
-    size_t count;
-    size_t tombstones;
-    CB_Arena* arena;
-} CB_Map_U64;
-
-typedef struct {
-    CB_Map_U64* map;
-    size_t index;
-    uint64_t key;
-    void* value;
-} CB_Map_U64_Iter;
-
-// ---- 声明 ----
-CBDEF void cb_map_u64_init_capacity(CB_Map_U64* map, size_t capacity);
-CBDEF void cb_map_u64_init_arena(CB_Map_U64* map, CB_Arena* arena, size_t capacity);
-CBDEF void cb_map_u64_put(CB_Map_U64* map, uint64_t key, void* value);
-CBDEF bool cb_map_u64_get(const CB_Map_U64* map, uint64_t key, void** out);
-CBDEF bool cb_map_u64_has(const CB_Map_U64* map, uint64_t key);
-CBDEF bool cb_map_u64_del(CB_Map_U64* map, uint64_t key);
-CBDEF size_t cb_map_u64_count(const CB_Map_U64* map);
-CBDEF void cb_map_u64_clear(CB_Map_U64* map);
-CBDEF void cb_map_u64_free(CB_Map_U64* map);
-CBDEF CB_Map_U64_Iter cb_map_u64_iter(CB_Map_U64* map);
-CBDEF bool cb_map_u64_next(CB_Map_U64_Iter* it);
-#define cb_map_u64_foreach(map, it) \
-    for (CB_Map_U64_Iter it = cb_map_u64_iter(map); cb_map_u64_next(&it);)
-
-// ---- 定义 ----
+// ---- definitions ----
 CBDEF void* cb__map_u64_alloc(CB_Map_U64* map, size_t size)
 {
     if (map->arena != NULL) return cb_arena_alloc(map->arena, size);
@@ -2640,7 +3266,7 @@ CBDEF void cb__map_u64_grow(CB_Map_U64* map)
 
 CBDEF void cb_map_u64_init_capacity(CB_Map_U64* map, size_t capacity)
 {
-    CB_ASSERT(map->slots == NULL && map->capacity == 0 && "map 必须先零初始化，且不能重复 init");
+    CB_ASSERT(map->slots == NULL && map->capacity == 0 && "the map must be zero-initialized and initialized only once");
     if (capacity == 0) return;
 
     size_t wanted = capacity * 4 / 3 + 1;
@@ -2651,7 +3277,7 @@ CBDEF void cb_map_u64_init_capacity(CB_Map_U64* map, size_t capacity)
 
 CBDEF void cb_map_u64_init_arena(CB_Map_U64* map, CB_Arena* arena, size_t capacity)
 {
-    map->arena = arena; // 必须先设，否则初始槽位会走 malloc
+    map->arena = arena; // set first, otherwise the initial slots would go through malloc
     cb_map_u64_init_capacity(map, capacity);
 }
 
@@ -2755,10 +3381,6 @@ CBDEF bool cb_map_u64_next(CB_Map_U64_Iter* it)
 // File System
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 #ifdef _WIN32
-// 参考 https://stackoverflow.com/a/75644008（FormatMessageW 用 4096 * sizeof(WCHAR) 的栈缓冲）
-#ifndef CB_WIN32_ERR_MSG_SIZE
-#define CB_WIN32_ERR_MSG_SIZE (4 * 1024)
-#endif // CB_WIN32_ERR_MSG_SIZE
 
 CBDEF char* cb_win32_error_message(DWORD err)
 {
@@ -2790,98 +3412,6 @@ CBDEF char* cb_win32_error_message(DWORD err)
 }
 #endif // _WIN32
 
-CBDEF const char* cb_path_name(const char* path);
-CBDEF bool cb_rename(const char* old_path, const char* new_path);
-CBDEF int cb_file_exists(const char* file_path);
-CBDEF const char* cb_get_current_dir_temp(void);
-CBDEF bool cb_set_current_dir(const char* path);
-
-CBDEF char* cb_temp_dir_name(const char* path);
-CBDEF char* cb_temp_file_name(const char* path);
-CBDEF char* cb_temp_file_ext(const char* path);
-CBDEF char* cb_temp_running_executable_path(void);
-
-// 文件类型只区分 错误 / 普通文件 / 目录 / 符号链接 / 其它 五种，
-// 更细的类型（FIFO / socket / 设备 / junction）没有实现。
-
-typedef enum {
-    CB_FILE_ERROR = -1,
-    CB_FILE_REGULAR = 0,
-    CB_FILE_DIRECTORY,
-    CB_FILE_SYMLINK,
-    CB_FILE_OTHER,
-} CB_File_Type;
-
-typedef enum {
-    CB_WALK_CONT,
-    CB_WALK_SKIP,
-    CB_WALK_STOP,
-} CB_Walk_Action;
-
-typedef struct {
-    const char* path;
-    CB_File_Type type;
-    size_t level;
-    void* data;
-    CB_Walk_Action* action;
-} CB_Walk_Entry;
-
-typedef bool (*CB_Walk_Func)(CB_Walk_Entry entry);
-
-// 只写关心的字段即可：cb_walk_dir(root, fn, .post_order = true) / (.data = &x)，
-// 剩下的字段由 CB__DEFAULT 给的默认值兜底（见 General 一节）。
-// 结构体必须带标签名：C++ 里"匿名 struct + 默认成员初始化器"会被
-// -Wnon-c-typedef-for-linkage 报出来。
-typedef struct CB_Walk_Dir_Opt {
-    void* data CB__DEFAULT(nullptr);
-    bool post_order CB__DEFAULT(false);
-} CB_Walk_Dir_Opt;
-
-CBDEF bool cb_delete_walk_entry(CB_Walk_Entry entry);
-CBDEF bool cb__walk_dir_opt_impl(CB_String_Builder* file_path, CB_Walk_Func func, size_t level, bool* stop, CB_Walk_Dir_Opt opt);
-CBDEF bool cb_walk_dir_opt(const char* root, CB_Walk_Func func, CB_Walk_Dir_Opt opt);
-#define cb_walk_dir(root, func, ...) cb_walk_dir_opt((root), (func), CB_CLIT(CB_Walk_Dir_Opt){__VA_ARGS__})
-
-typedef struct {
-    char* name;
-    bool error;
-
-    struct {
-#ifdef _WIN32
-        WIN32_FIND_DATA win32_data;
-        HANDLE win32_hFind;
-        bool win32_init;
-#else
-        DIR* posix_dir;
-        struct dirent* posix_ent;
-#endif // _WIN32
-    } cb__private;
-} CB_Dir_Entry;
-
-// 打开目录准备迭代。失败返回 false（错误会自动经 cb_log 打印）。
-CBDEF bool cb_dir_entry_open(const char* dir_path, CB_Dir_Entry* dir);
-// 取下一个条目。返回 false 表示出错或者已经取完（出错时 dir->error 为 true）。
-CBDEF bool cb_dir_entry_next(CB_Dir_Entry* dir);
-CBDEF void cb_dir_entry_close(CB_Dir_Entry dir);
-
-typedef struct {
-    const char** items;
-    size_t count;
-    size_t capacity;
-} CB_File_Paths;
-
-
-// 递归创建目录（mkdir -p）：中间层不存在会自动建，路径已存在且是目录也算成功。
-CBDEF bool cb_mkdir_if_not_exists(const char* path);
-CBDEF bool cb_copy_file(const char* src_path, const char* dst_path);
-CBDEF bool cb_copy_directory_recursively(const char* src_path, const char* dst_path);
-CBDEF bool cb_delete_directory_recursively(const char* dir_path);
-// 列出目录下的条目名（不含 "." 与 ".."），内存来自 temp storage。
-CBDEF bool cb_read_entire_dir(const char* parent, CB_File_Paths* children);
-CBDEF bool cb_write_entire_file(const char* path, const void* data, size_t size);
-CBDEF CB_File_Type cb_get_file_type(const char* path);
-CBDEF bool cb_delete_file(const char* path);
-
 CBDEF bool cb_delete_walk_entry(CB_Walk_Entry entry)
 {
     return cb_delete_file(entry.path);
@@ -2899,7 +3429,7 @@ CBDEF bool cb__walk_dir_opt_impl(CB_String_Builder* file_path, CB_Walk_Func func
     CB_File_Type file_type = cb_get_file_type(file_path->items);
     if (file_type < 0) cb_return_defer(false);
 
-    // 前序：先处理自己，再递归子项
+    // Pre-order: handle this entry, then recurse into the children
     if (!opt.post_order) {
         if (!func(CB_CLIT(CB_Walk_Entry){
                 .path = file_path->items,
@@ -2914,7 +3444,7 @@ CBDEF bool cb__walk_dir_opt_impl(CB_String_Builder* file_path, CB_Walk_Func func
             break;
         case CB_WALK_STOP:
             *stop = true;
-            cb_return_defer(true); // STOP 也要结束遍历，直接返回，不贯穿到 SKIP
+            cb_return_defer(true); // STOP ends the walk too: return right away, do not fall through to SKIP
         case CB_WALK_SKIP:
             cb_return_defer(true);
         default:
@@ -2925,18 +3455,18 @@ CBDEF bool cb__walk_dir_opt_impl(CB_String_Builder* file_path, CB_Walk_Func func
     if (file_type == CB_FILE_DIRECTORY) {
         if (!cb_dir_entry_open(file_path->items, &dir)) cb_return_defer(false);
         while (true) {
-            // 下一个条目
+            // next entry
             if (!cb_dir_entry_next(&dir)) {
                 if (!dir.error) break;
                 cb_return_defer(false);
             }
 
-            // 跳过 . 与 ..
+            // skip . and ..
             if (strcmp(dir.name, ".") == 0) continue;
             if (strcmp(dir.name, "..") == 0) continue;
 
-            // 回到父路径长度再拼子项。不是 saved - 1：StringBuilder 的 count 不含终止符
-            // （items[count] 才是 '\0'）。
+            // Rebuild the child path from the parent length. Not saved - 1: the StringBuilder count does
+            // not include the terminator (items[count] is the '\0').
             file_path->count = saved_file_path_count;
 #ifdef _WIN32
             cb_sb_appendf(file_path, "\\%s", dir.name);
@@ -2944,16 +3474,16 @@ CBDEF bool cb__walk_dir_opt_impl(CB_String_Builder* file_path, CB_Walk_Func func
             cb_sb_appendf(file_path, "/%s", dir.name);
 #endif // _WIN32
 
-            // 递归子目录
+            // recurse into the subdirectory
             if (!cb__walk_dir_opt_impl(file_path, func, level + 1, stop, opt)) cb_return_defer(false);
             if (*stop) cb_return_defer(true);
         }
-        // 递归期间子项把 items[saved] 覆盖成了 '/'，这里补回终止符
+        // recursion overwrote items[saved] with '/', put the terminator back
         file_path->count = saved_file_path_count;
         cb__sb_terminate(file_path);
     }
 
-    // Post-order walking：先递归处理完子项，最后才处理自己
+    // Post-order: recurse into the children first and handle this entry last
     if (opt.post_order) {
         if (!func(CB_CLIT(CB_Walk_Entry){
                 .path = file_path->items,
@@ -2968,7 +3498,7 @@ CBDEF bool cb__walk_dir_opt_impl(CB_String_Builder* file_path, CB_Walk_Func func
             break;
         case CB_WALK_STOP:
             *stop = true;
-            cb_return_defer(true); // STOP 也要结束遍历，直接返回，不贯穿到 SKIP
+            cb_return_defer(true); // STOP ends the walk too: return right away, do not fall through to SKIP
         case CB_WALK_SKIP:
             cb_return_defer(true);
         default:
@@ -2977,7 +3507,7 @@ CBDEF bool cb__walk_dir_opt_impl(CB_String_Builder* file_path, CB_Walk_Func func
     }
 
 defer:
-    // 把 file_path 恢复原样
+    // restore file_path
     file_path->count = saved_file_path_count;
     cb_da_last(file_path) = '\0';
     cb_dir_entry_close(dir);
@@ -3028,7 +3558,7 @@ CBDEF bool cb_rename(const char* old_path, const char* new_path)
     return true;
 }
 
-// 不存在返回 0
+// Returns 0 when the path does not exist.
 CBDEF int cb_file_exists(const char* file_path)
 {
 #ifdef _WIN32
@@ -3055,14 +3585,14 @@ CBDEF const char* cb_get_current_dir_temp(void)
 
     return buffer;
 #else
-    // PATH_MAX 在 POSIX 里是可选的，这里用自己的兜底值，失败时按需重试。
+    // PATH_MAX is optional in POSIX, so use the fallback value and retry with a bigger buffer if needed.
     char* buffer = (char*)cb_temp_alloc(CB_PATH_MAX);
     while (getcwd(buffer, CB_PATH_MAX) == NULL) {
         if (errno != ERANGE) {
             cb_log(CB_ERROR, "Could not get current directory: %s", strerror(errno));
             return NULL;
         }
-        // 路径比缓冲区长：换一块更大的再试（旧块留在 temp 里）
+        // The path is longer than the buffer: retry with a larger one (the old block stays in temp storage)
         buffer = (char*)cb_temp_alloc(CB_PATH_MAX * 2);
         if (getcwd(buffer, CB_PATH_MAX * 2) != NULL) break;
         cb_log(CB_ERROR, "Could not get current directory: %s", strerror(errno));
@@ -3101,7 +3631,7 @@ CBDEF char* cb_temp_dir_name(const char* path)
     CB_ASSERT(ret == 0);
     return cb_temp_sprintf("%s%s", drive, dir);
 #else
-    // 取自 musl 的 dirname 实现：libc 各家对 dirname(3) 是否修改入参没有共识。
+    // Taken from musl's dirname: libc vendors do not agree on whether dirname(3) modifies its argument.
     if (!path || !*path) return cb_temp_strdup(".");
     size_t i = strlen(path) - 1;
     for (; path[i] == '/'; i--)
@@ -3125,7 +3655,7 @@ CBDEF char* cb_temp_file_name(const char* path)
     CB_ASSERT(ret == 0);
     return cb_temp_sprintf("%s%s", fname, ext);
 #else
-    // 取自 musl 的 basename 实现：libc 各家对 basename(3) 是否修改入参没有共识。
+    // Taken from musl's basename: libc vendors do not agree on whether basename(3) modifies its argument.
     if (!path || !*path) return cb_temp_strdup(".");
     char* s = cb_temp_strdup(path);
     size_t i = strlen(s) - 1;
@@ -3251,7 +3781,7 @@ CBDEF void cb_dir_entry_close(CB_Dir_Entry dir)
 #endif // _WIN32
 }
 
-// copy_file_range() 需要 Linux 4.5+
+// copy_file_range() needs Linux 4.5+
 CBDEF bool cb_copy_file(const char* src_path, const char* dst_path)
 {
 #ifdef CB_ENABLE_ECHO
@@ -3380,13 +3910,13 @@ defer:
 
 CBDEF bool cb_delete_directory_recursively(const char* dir_path)
 {
-    // 不用指定初始化器写法：C++ 下部分指定会触发 -Wmissing-designated-field-initializers
+    // No designated initializers here: partial designators trigger -Wmissing-designated-field-initializers in C++
     CB_Walk_Dir_Opt opt = CB_ZERO;
     opt.post_order = true;
     return cb_walk_dir_opt(dir_path, cb_delete_walk_entry, opt);
 }
 
-// 例：parent = "~/dir/" 时 children 里依次是 "dir2"、"file1"、"file2"（"." 与 ".." 已跳过）。
+// For parent = "~/dir/" the children are "dir2", "file1", "file2" ("." and ".." are skipped).
 CBDEF bool cb_read_entire_dir(const char* parent, CB_File_Paths* children)
 {
     if (strlen(parent) == 0) {
@@ -3397,7 +3927,7 @@ CBDEF bool cb_read_entire_dir(const char* parent, CB_File_Paths* children)
     CB_Dir_Entry dir = CB_ZERO;
     if (!cb_dir_entry_open(parent, &dir)) cb_return_defer(false);
     while (cb_dir_entry_next(&dir)) {
-        // 跳过 "." 与 ".."：它们是噪音，还会让"照着列表递归"的代码无限递归
+        // Skip "." and "..": they are noise and a naive "recurse over the listing" loop would never end.
         if (strcmp(dir.name, ".") == 0 || strcmp(dir.name, "..") == 0) continue;
         cb_da_append(children, cb_temp_strdup(dir.name));
     }
@@ -3444,8 +3974,8 @@ CBDEF CB_File_Type cb_get_file_type(const char* path)
         return CB_FILE_ERROR;
     }
 
-    // 顺序要紧：符号链接（含目录链接/junction）同时带 DIRECTORY 与 REPARSE_POINT，
-    // 先判 REPARSE_POINT 才能与 POSIX 下 lstat 的语义一致（返回链接本身，不返回目标）。
+    // Order matters: a symlink (including directory links and junctions) has both DIRECTORY and
+    // REPARSE_POINT set; checking REPARSE_POINT first matches POSIX lstat (the link, not the target).
     if (attr & FILE_ATTRIBUTE_REPARSE_POINT) return CB_FILE_SYMLINK;
     if (attr & FILE_ATTRIBUTE_DIRECTORY) return CB_FILE_DIRECTORY;
     return CB_FILE_REGULAR;
@@ -3473,7 +4003,7 @@ CBDEF bool cb_delete_file(const char* path)
     CB_File_Type type = cb_get_file_type(path);
     switch (type) {
     case CB_FILE_ERROR:
-        // 取不到类型（例如文件不存在）：与 POSIX 分支 remove() 失败的行为保持一致
+        // Could not get the type (for example the path is gone): behave like remove() failing on POSIX
         return false;
     case CB_FILE_DIRECTORY:
         if (!RemoveDirectoryA(path)) {
@@ -3502,29 +4032,11 @@ CBDEF bool cb_delete_file(const char* path)
 #endif // _WIN32
 }
 
-
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-// 路径处理
+// Path
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-// 结果都分配在 temp storage 上。这些函数只做字符串层面的处理，不访问文件系统
-// （cb_path_absolute 例外：它需要读取当前工作目录）。
 
-// ---- 声明 ----
-// 是否绝对路径（POSIX: 以 / 开头；Windows: 以 / 或 \ 开头，或形如 C:/）
-CBDEF bool cb_path_is_absolute(const char* path);
-// 拼接两段路径，自动处理分隔符（不会出现重复分隔符）。
-// 若 b 是绝对路径，则忽略 a 直接返回 b（与 os.path.join 的惯例一致）。
-CBDEF char* cb_path_join(const char* a, const char* b);
-// 折叠重复分隔符、解析 "." 与 ".."。不解析符号链接、不访问文件系统。
-// 相对路径保持相对；根目录上的 ".." 会被丢弃（"/.." -> "/"）。
-CBDEF char* cb_path_normalize(const char* path);
-// 相对路径转绝对路径（当前工作目录 + normalize）
-CBDEF char* cb_path_absolute(const char* path);
-// 替换扩展名。new_ext 可以带或不带前导点；传 NULL 或 "" 表示去掉扩展名。
-// 只处理最后一个路径分量里的最后一个点之后的部分。
-CBDEF char* cb_path_replace_ext(const char* path, const char* new_ext);
-
-// ---- 定义 ----
+// ---- definitions ----
 CBDEF bool cb_path_is_sep(char c)
 {
 #ifdef _WIN32
@@ -3534,18 +4046,12 @@ CBDEF bool cb_path_is_sep(char c)
 #endif // _WIN32
 }
 
-#ifdef _WIN32
-#define CB_PATH_SEP '\\'
-#else
-#define CB_PATH_SEP '/'
-#endif // _WIN32
-
 CBDEF bool cb_path_is_absolute(const char* path)
 {
     if (path == NULL || path[0] == '\0') return false;
     if (cb_path_is_sep(path[0])) return true;
 #ifdef _WIN32
-    // Windows 盘符路径：字母 + ':' + 分隔符
+    // Windows drive path: letter + ':' + separator
     if (isalpha((unsigned char)path[0]) && path[1] == ':' && cb_path_is_sep(path[2])) return true;
 #endif // _WIN32
     return false;
@@ -3557,7 +4063,7 @@ CBDEF char* cb_path_join(const char* a, const char* b)
     if (b == NULL || b[0] == '\0') return cb_temp_strdup(a);
     if (cb_path_is_absolute(b)) return cb_temp_strdup(b);
 
-    // 走到这里 b 一定是相对路径。无论 a 末尾是哪种分隔符，输出统一用平台原生分隔符。
+    // b is definitely relative here. Whatever separator a ends with, the output uses the native one.
     size_t a_len = strlen(a);
     if (cb_path_is_sep(a[a_len - 1])) {
         return cb_temp_sprintf("%.*s%c%s", (int)(a_len - 1), a, CB_PATH_SEP, b);
@@ -3565,7 +4071,7 @@ CBDEF char* cb_path_join(const char* a, const char* b)
     return cb_temp_sprintf("%s%c%s", a, CB_PATH_SEP, b);
 }
 
-// 按任意路径分隔符切分：Windows 上 '/' 与 '\\' 都是分隔符，只按 CB_PATH_SEP 切不开。
+// Split on any path separator: on Windows both '/' and '\\' separate, so CB_PATH_SEP alone is not enough.
 CBDEF CB_String_View cb__sv_chop_by_path_sep(CB_String_View* sv)
 {
     size_t i = 0;
@@ -3584,20 +4090,20 @@ CBDEF char* cb_path_normalize(const char* path)
     bool absolute = cb_path_is_sep(path[0]);
     if (absolute) cb_sb_append(&sb, CB_PATH_SEP);
 
-    // 用"分量栈"来解析，避免在字符串上做复杂的回退
+    // Resolve with a component stack instead of doing complicated backtracking on the string
     CB_File_Paths parts = CB_ZERO;
 
     CB_String_View rest = cb_sv_from_cstr(path);
     while (rest.count > 0) {
         CB_String_View part = cb__sv_chop_by_path_sep(&rest);
-        if (part.count == 0) continue;                      // 重复分隔符
-        if (cb_sv_eq(part, cb_sv_from_cstr("."))) continue; // 当前目录
+        if (part.count == 0) continue;                      // doubled separator
+        if (cb_sv_eq(part, cb_sv_from_cstr("."))) continue; // current directory
 
         if (cb_sv_eq(part, cb_sv_from_cstr(".."))) {
             if (parts.count > 0) {
-                parts.count -= 1; // 可以回退
+                parts.count -= 1; // can go back up
             } else if (!absolute) {
-                // 相对路径开头的 ".." 必须保留
+                // a leading ".." of a relative path must be kept
                 cb_da_append(&parts, cb_temp_strndup(part.data, part.count));
             }
             continue;
@@ -3609,7 +4115,7 @@ CBDEF char* cb_path_normalize(const char* path)
         if (i > 0) cb_sb_append(&sb, CB_PATH_SEP);
         cb_sb_append_cstr(&sb, parts.items[i]);
     }
-    // 空路径：绝对路径给根目录，相对路径给 "."
+    // Empty path: the root for absolute input, "." for relative input
     if (sb.count == 0) {
         cb_sb_append(&sb, absolute ? CB_PATH_SEP : '.');
     }
@@ -3634,7 +4140,7 @@ CBDEF char* cb_path_replace_ext(const char* path, const char* new_ext)
 {
     if (path == NULL) return cb_temp_strdup("");
 
-    // 只在最后一个路径分量里找最后一个点
+    // Only look for the last dot inside the last path component
     size_t last_sep = 0;
     for (size_t i = 0; path[i] != '\0'; ++i) {
         if (cb_path_is_sep(path[i])) last_sep = i + 1;
@@ -3654,52 +4160,10 @@ CBDEF char* cb_path_replace_ext(const char* path, const char* new_ext)
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-// File System 扩展：元信息 / 递归建目录 / 原子写 / 符号链接 / glob / mmap
+// File System Extras
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-#ifdef _WIN32
-#define CB_PROCESS_ID() ((unsigned long)GetCurrentProcessId())
-#else
-#define CB_PROCESS_ID() ((unsigned long)getpid())
-#endif // _WIN32
-
-// ---- 声明 ----
-// 文件字节数。失败返回 (size_t)-1。目录的大小因平台而异，不要依赖它。
-CBDEF size_t cb_file_size(const char* path);
-// 最后修改时间（Unix 时间戳，秒）。失败返回 -1。
-CBDEF int64_t cb_file_mtime(const char* path);
-
-// 原子写：先写同目录下的临时文件，再 rename 覆盖目标。
-// 同一文件系统内 rename 是原子的，因此不会出现"目标文件被写坏一半"的中间状态。
-CBDEF bool cb_write_entire_file_atomic(const char* path, const void* data, size_t size);
-
-// 创建符号链接。Windows 上需要开发者模式或管理员权限。
-CBDEF bool cb_create_symlink(const char* target, const char* link_path);
-// 读取符号链接指向的目标（temp 分配）。失败返回 NULL。
-CBDEF char* cb_read_symlink(const char* path);
-
-// 通配符匹配：* 匹配任意串，? 匹配单字符，[abc] / [a-z] / [!abc] 字符类。
-CBDEF bool cb_glob_match(const char* pattern, const char* text);
-// 列出 dir 下匹配 pattern 的条目（只匹配单层，不递归）。
-// 追加到 out 的是"dir/名字"完整路径，内存来自 temp storage。
-CBDEF bool cb_glob(const char* dir, const char* pattern, CB_File_Paths* out);
-
-// 只读内存映射。适合大文件零拷贝读取。
-typedef struct {
-    void* data;
-    size_t size;
-#ifdef _WIN32
-    HANDLE file_handle;
-    HANDLE mapping_handle;
-#else
-    int fd;
-#endif // _WIN32
-} CB_Mmap;
-
-CBDEF bool cb_mmap_open(const char* path, CB_Mmap* out);
-CBDEF void cb_mmap_close(CB_Mmap* mmap);
-
-// ---- 定义 ----
+// ---- definitions ----
 CBDEF size_t cb_file_size(const char* path)
 {
 #ifdef _WIN32
@@ -3721,7 +4185,7 @@ CBDEF int64_t cb_file_mtime(const char* path)
     ULARGE_INTEGER t;
     t.LowPart = info.ftLastWriteTime.dwLowDateTime;
     t.HighPart = info.ftLastWriteTime.dwHighDateTime;
-    // FILETIME 是"1601-01-01 起的 100ns 数"，先平移到 Unix 纪元再换算成秒
+    // FILETIME counts 100ns units since 1601-01-01: shift to the Unix epoch first, then to seconds
     return (int64_t)((t.QuadPart - 116444736000000000ull) / 10000000ull);
 #else
     struct stat statbuf;
@@ -3730,13 +4194,13 @@ CBDEF int64_t cb_file_mtime(const char* path)
 #endif // _WIN32
 }
 
-// 实现放在这一节（声明在 File System 一节）：它要用 cb_path_is_sep，而本文件每节
-// 是"声明->定义"，被调用的函数必须出现在前面。
+// This implementation lives here while the declaration is in the File System section: it needs
+// cb_path_is_sep, and each section of this file is "declarations then definitions".
 CBDEF bool cb_mkdir_if_not_exists(const char* path)
 {
     if (path == NULL || path[0] == '\0') return false;
 
-    // 一次遍历：每遇到一个分隔符就把攒出来的前缀建一次（不要递归调用自己，会无限递归）。
+    // One pass: every time a separator shows up, create the prefix collected so far (no recursion).
     bool result = true;
     CB_String_Builder partial = CB_ZERO;
 
@@ -3744,9 +4208,9 @@ CBDEF bool cb_mkdir_if_not_exists(const char* path)
         char c = path[i];
         if (c == '\0' || cb_path_is_sep(c)) {
             if (partial.count > 0) {
-                // partial.items 已经是合法的 C 字符串（StringBuilder 的不变量），直接用
+                // partial.items is already a valid C string (StringBuilder invariant), use it directly
 
-                // "C:" 这类盘符前缀不能 mkdir（它是"驱动器当前目录"），跳过
+                // A drive prefix like "C:" cannot be mkdir'd (it is the "current directory of the drive")
                 bool is_drive = partial.count == 2 && partial.items[1] == ':';
                 if (!is_drive) {
 #ifdef _WIN32
@@ -3778,13 +4242,13 @@ defer:
 CBDEF bool cb_write_entire_file_atomic(const char* path, const void* data, size_t size)
 {
     static size_t counter = 0;
-    // 临时文件与目标同目录，保证 rename 不跨文件系统
+    // The temp file sits next to the target so rename cannot cross a file system
     char* tmp_path = cb_temp_sprintf("%s.tmp%lu_%zu", path, CB_PROCESS_ID(), counter++);
 
     if (!cb_write_entire_file(tmp_path, data, size)) return false;
 
     if (!cb_rename(tmp_path, path)) {
-        cb_delete_file(tmp_path); // 别留下垃圾文件
+        cb_delete_file(tmp_path); // do not leave garbage behind
         return false;
     }
     return true;
@@ -3812,8 +4276,8 @@ CBDEF bool cb_create_symlink(const char* target, const char* link_path)
 CBDEF char* cb_read_symlink(const char* path)
 {
 #ifdef _WIN32
-    // Windows 的符号链接是"重解析点"，要读目标得走 DeviceIoControl(FSCTL_GET_REPARSE_POINT)。
-    // 这里定义自己的紧凑结构，避免依赖 ddk/ntifs.h 里的 REPARSE_DATA_BUFFER。
+    // A Windows symlink is a reparse point; reading its target needs DeviceIoControl(FSCTL_GET_REPARSE_POINT).
+    // The compact struct below is local so ddk/ntifs.h does not have to be included.
     typedef struct {
         ULONG tag;
         USHORT data_length;
@@ -3822,8 +4286,8 @@ CBDEF char* cb_read_symlink(const char* path)
         USHORT substitute_length;
         USHORT print_offset;
         USHORT print_length;
-        // 注意：符号链接在这里还有一个 ULONG flags，挂载点没有，
-        // 所以 PathBuffer 的起点要按 tag 区分（见下面的 path_buffer_offset）。
+        // Note: a symlink has an extra ULONG flags field that a mount point does not, so the start of
+        // PathBuffer depends on the tag (see path_buffer_offset below).
     } CB__Reparse_Header;
 
     HANDLE handle = CreateFileA(path, 0,
@@ -3849,23 +4313,23 @@ CBDEF char* cb_read_symlink(const char* path)
     CB__Reparse_Header* header = (CB__Reparse_Header*)buffer;
     size_t path_buffer_offset;
     if (header->tag == IO_REPARSE_TAG_SYMLINK) {
-        path_buffer_offset = 20; // 比挂载点多一个 ULONG flags
+        path_buffer_offset = 20; // one ULONG flags more than a mount point
     } else if (header->tag == IO_REPARSE_TAG_MOUNT_POINT) {
         path_buffer_offset = 16;
     } else {
-        cb_log(CB_ERROR, "%s 不是符号链接（reparse tag = 0x%lX）", path, (unsigned long)header->tag);
+        cb_log(CB_ERROR, "%s is not a symlink (reparse tag = 0x%lX)", path, (unsigned long)header->tag);
         return NULL;
     }
 
     if (path_buffer_offset + header->substitute_offset + header->substitute_length > bytes_returned) {
-        cb_log(CB_ERROR, "重解析点数据不完整：%s", path);
+        cb_log(CB_ERROR, "incomplete reparse point data: %s", path);
         return NULL;
     }
 
     const WCHAR* wide = (const WCHAR*)(buffer + path_buffer_offset + header->substitute_offset);
     int wide_len = (int)(header->substitute_length / sizeof(WCHAR));
 
-    // 目标通常带 "\??\" 前缀（NT 对象路径），去掉它才是普通路径
+    // Targets usually carry the "\??\" prefix (NT object path); strip it to get a normal path
     if (wide_len >= 4 && wide[0] == L'\\' && wide[1] == L'?' && wide[2] == L'?' && wide[3] == L'\\') {
         wide += 4;
         wide_len -= 4;
@@ -3889,18 +4353,18 @@ CBDEF char* cb_read_symlink(const char* path)
             cb_log(CB_ERROR, "Could not read symlink %s: %s", path, strerror(errno));
             return NULL;
         }
-        if ((size_t)n < capacity) { // readlink 不会补 NUL，这里自己补
+        if ((size_t)n < capacity) { // readlink does not NUL-terminate, do it here
             buffer[n] = '\0';
             return buffer;
         }
-        capacity *= 2; // 被截断了，换更大的缓冲区
+        capacity *= 2; // truncated, try a bigger buffer
     }
 #endif // _WIN32
 }
 
 CBDEF bool cb_glob_match(const char* pattern, const char* text)
 {
-    // 迭代 + 回溯处理 '*'，不用递归（避免深路径爆栈）
+    // Iterative '*' handling with backtracking instead of recursion (deep paths would blow the stack)
     const char* p = pattern;
     const char* t = text;
     const char* star_p = NULL;
@@ -3932,9 +4396,9 @@ CBDEF bool cb_glob_match(const char* pattern, const char* text)
                     cls += 1;
                 }
             }
-            if (*cls != ']') return false; // 字符类没闭合，按不匹配处理
+            if (*cls != ']') return false; // unterminated character class: treat it as no match
 
-            if (matched == negate) { // 没匹配上，尝试用上一个 '*' 回退
+            if (matched == negate) { // no match: backtrack to the previous '*'
                 if (star_p == NULL) return false;
                 p = star_p + 1;
                 t = ++star_t;
@@ -3998,7 +4462,7 @@ CBDEF bool cb_mmap_open(const char* path, CB_Mmap* out)
     }
 
     out->file_handle = file;
-    if (file_size.QuadPart == 0) return true; // 空文件无法映射，返回空视图
+    if (file_size.QuadPart == 0) return true; // an empty file cannot be mapped, hand back an empty view
 
     HANDLE mapping = CreateFileMappingA(file, NULL, PAGE_READONLY, 0, 0, NULL);
     if (mapping == NULL) {
@@ -4036,7 +4500,7 @@ CBDEF bool cb_mmap_open(const char* path, CB_Mmap* out)
     }
 
     out->fd = fd;
-    if (statbuf.st_size == 0) return true; // 长度 0 的 mmap 会 EINVAL，直接给空视图
+    if (statbuf.st_size == 0) return true; // mmap of length 0 fails with EINVAL, hand back an empty view
 
     void* data = mmap(NULL, (size_t)statbuf.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
     if (data == MAP_FAILED) {
@@ -4071,154 +4535,12 @@ CBDEF void cb_mmap_close(CB_Mmap* mmap)
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // Math & Bits
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-// cb_min / cb_max / cb_clamp：每个参数只求值一次，且返回类型 = 第一个参数的类型。
-//
-//   C   ：_Generic 按第一个参数的类型分派到同类型的 static inline 实现，
-//         只覆盖下面那张表里的 15 个标准算术类型（char 是独立类型，必须单列）；
-//         枚举 / 指针 / 结构体要先显式转换成表里的类型，否则编译不过。
-//   C++ ：模板，没有这个限制（枚举、指针都能用）。
-//
-// 注意（C）：第二个及之后的参数会先隐式转成第一个参数的类型再比较：cb_min(2, 1.9)
-// 走 int 版、结果是 1；想让小数参与比较就把小数写在第一个：cb_min(1.9, 2) = 1.9。
-// 这是"返回类型 = 第一个参数的类型"的直接后果，不是 bug。
-
 #ifdef __cplusplus
-
-template <typename T>
-struct cb__remove_ref {
-    typedef T type;
-};
-template <typename T>
-struct cb__remove_ref<T&> {
-    typedef T type;
-};
-
-// a < b ? a : b 对左值给出的是左值，decltype 得到 T&，直接当返回类型就是返回悬垂引用
-// （参数是按值传进来的局部量），所以要去掉引用。
-#define CB__MINMAX_RET(expr) typename cb__remove_ref<decltype(expr)>::type
-
-template <typename T, typename U>
-constexpr auto cb_min(T a, U b) -> CB__MINMAX_RET(a < b ? a : b)
-{
-    return a < b ? a : b;
-}
-
-template <typename T, typename U>
-constexpr auto cb_max(T a, U b) -> CB__MINMAX_RET(a > b ? a : b)
-{
-    return a > b ? a : b;
-}
-
-template <typename T, typename U, typename V>
-constexpr auto cb_clamp(T x, U lo, V hi) -> CB__MINMAX_RET(cb_min(cb_max(x, lo), hi))
-{
-    return cb_min(cb_max(x, lo), hi);
-}
-
 #else // !__cplusplus
-
-// 盖章宏：一次生成 min/max/clamp 三个同类型实现
-#define CB__DEFINE_MINMAX(type, tag)                                    \
-    CBDEF type cb__min_##tag(type a, type b) { return a < b ? a : b; }  \
-    CBDEF type cb__max_##tag(type a, type b) { return a > b ? a : b; }  \
-    CBDEF type cb__clamp_##tag(type x, type lo, type hi)                \
-    {                                                                   \
-        return cb__min_##tag(cb__max_##tag(x, lo), hi);                 \
-    }
-
-CB__DEFINE_MINMAX(_Bool, bool)
-CB__DEFINE_MINMAX(char, char)
-CB__DEFINE_MINMAX(signed char, schar)
-CB__DEFINE_MINMAX(unsigned char, uchar)
-CB__DEFINE_MINMAX(short, short)
-CB__DEFINE_MINMAX(unsigned short, ushort)
-CB__DEFINE_MINMAX(int, int)
-CB__DEFINE_MINMAX(unsigned int, uint)
-CB__DEFINE_MINMAX(long, long)
-CB__DEFINE_MINMAX(unsigned long, ulong)
-CB__DEFINE_MINMAX(long long, llong)
-CB__DEFINE_MINMAX(unsigned long long, ullong)
-CB__DEFINE_MINMAX(float, float)
-CB__DEFINE_MINMAX(double, double)
-CB__DEFINE_MINMAX(long double, ldouble)
-
-#define cb_min(a, b)          \
-    _Generic((a),             \
-        _Bool: cb__min_bool,  \
-        char: cb__min_char,   \
-        signed char: cb__min_schar,   \
-        unsigned char: cb__min_uchar, \
-        short: cb__min_short,         \
-        unsigned short: cb__min_ushort, \
-        int: cb__min_int,             \
-        unsigned int: cb__min_uint,   \
-        long: cb__min_long,           \
-        unsigned long: cb__min_ulong, \
-        long long: cb__min_llong,     \
-        unsigned long long: cb__min_ullong, \
-        float: cb__min_float,         \
-        double: cb__min_double,       \
-        long double: cb__min_ldouble)((a), (b))
-
-#define cb_max(a, b)          \
-    _Generic((a),             \
-        _Bool: cb__max_bool,  \
-        char: cb__max_char,   \
-        signed char: cb__max_schar,   \
-        unsigned char: cb__max_uchar, \
-        short: cb__max_short,         \
-        unsigned short: cb__max_ushort, \
-        int: cb__max_int,             \
-        unsigned int: cb__max_uint,   \
-        long: cb__max_long,           \
-        unsigned long: cb__max_ulong, \
-        long long: cb__max_llong,     \
-        unsigned long long: cb__max_ullong, \
-        float: cb__max_float,         \
-        double: cb__max_double,       \
-        long double: cb__max_ldouble)((a), (b))
-
-#define cb_clamp(x, lo, hi)            \
-    _Generic((x),                      \
-        _Bool: cb__clamp_bool,         \
-        char: cb__clamp_char,          \
-        signed char: cb__clamp_schar,  \
-        unsigned char: cb__clamp_uchar, \
-        short: cb__clamp_short,        \
-        unsigned short: cb__clamp_ushort, \
-        int: cb__clamp_int,            \
-        unsigned int: cb__clamp_uint,  \
-        long: cb__clamp_long,          \
-        unsigned long: cb__clamp_ulong, \
-        long long: cb__clamp_llong,    \
-        unsigned long long: cb__clamp_ullong, \
-        float: cb__clamp_float,        \
-        double: cb__clamp_double,      \
-        long double: cb__clamp_ldouble)((x), (lo), (hi))
 
 #endif // __cplusplus
 
-// 把 value 向上/向下对齐到 alignment（必须是 2 的幂）
-#define cb_align_up(value, alignment) (((value) + (alignment) - 1) & ~((alignment) - 1))
-#define cb_align_down(value, alignment) ((value) & ~((alignment) - 1))
-
-// ---- 声明 ----
-CBDEF bool cb_is_pow2(uint64_t value);
-// 向上取到最近的 2 的幂；0 与 1 都返回 1，溢出返回 0
-CBDEF uint64_t cb_next_pow2(uint64_t value);
-// 二进制里 1 的个数
-CBDEF int cb_popcount64(uint64_t value);
-// 末尾/开头连续 0 的个数。注意 cb_ctz64(0) == 64、cb_clz64(0) == 64。
-CBDEF int cb_ctz64(uint64_t value);
-CBDEF int cb_clz64(uint64_t value);
-CBDEF uint64_t cb_rotl64(uint64_t value, int amount);
-CBDEF uint64_t cb_rotr64(uint64_t value, int amount);
-// 字节序
-CBDEF bool cb_is_little_endian(void);
-CBDEF uint32_t cb_bswap32(uint32_t value);
-CBDEF uint64_t cb_bswap64(uint64_t value);
-
-// ---- 定义 ----
+// ---- definitions ----
 CBDEF bool cb_is_pow2(uint64_t value)
 {
     return value != 0 && (value & (value - 1)) == 0;
@@ -4227,7 +4549,7 @@ CBDEF bool cb_is_pow2(uint64_t value)
 CBDEF uint64_t cb_next_pow2(uint64_t value)
 {
     if (value <= 1) return 1;
-    if (value > (uint64_t)1 << 63) return 0; // 溢出
+    if (value > (uint64_t)1 << 63) return 0; // overflow
     value -= 1;
     value |= value >> 1;
     value |= value >> 2;
@@ -4317,15 +4639,8 @@ CBDEF uint64_t cb_bswap64(uint64_t value)
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // Time & Date
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-// ---- 声明 ----
-// 当前 UTC 时间戳（秒）
-CBDEF int64_t cb_time_now(void);
-// Unix 时间戳转 ISO8601 UTC，如 "2025-09-13T03:26:40Z"（temp 分配）
-CBDEF char* cb_time_to_iso8601(int64_t unix_seconds);
-// 人性化时长：0.42 -> "420ms"，12.5 -> "12.5s"，185 -> "3m5s"，7325 -> "2h2m"
-CBDEF char* cb_duration_to_str(double seconds);
 
-// ---- 定义 ----
+// ---- definitions ----
 CBDEF int64_t cb_time_now(void)
 {
     return (int64_t)time(NULL);
@@ -4352,7 +4667,7 @@ CBDEF char* cb_duration_to_str(double seconds)
     if (seconds < 1.0) return cb_temp_sprintf("%.0fms", seconds * 1000.0);
 
     if (seconds < 60.0) {
-        // 12.5s（整秒时不带小数点）
+// whole seconds drop the decimal point: 12 -> "12s"
         double rounded = (double)(int64_t)(seconds * 10.0 + 0.5) / 10.0;
         if (rounded == (double)(int64_t)rounded) return cb_temp_sprintf("%llds", (long long)(int64_t)rounded);
         return cb_temp_sprintf("%.1fs", rounded);
@@ -4370,24 +4685,8 @@ CBDEF char* cb_duration_to_str(double seconds)
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // Random
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-// xoshiro256**：质量比 rand() 高，且结果跨平台一致（便于复现）。
-// 注意：它适合模拟、采样、洗牌，**不适合**密码学用途。
 
-typedef struct {
-    uint64_t state[4];
-} CB_Rng;
-
-// ---- 声明 ----
-CBDEF void cb_rng_seed(CB_Rng* rng, uint64_t seed);
-CBDEF uint64_t cb_rng_next(CB_Rng* rng);
-// [0, 1) 的浮点数
-CBDEF double cb_rng_double(CB_Rng* rng);
-// [0, bound) 的均匀整数；bound 为 0 时返回 0
-CBDEF uint64_t cb_rng_range(CB_Rng* rng, uint64_t bound);
-// 原地洗牌（Fisher-Yates），元素按字节搬动
-CBDEF void cb_rng_shuffle(CB_Rng* rng, void* items, size_t count, size_t elem_size);
-
-// ---- 定义 ----
+// ---- definitions ----
 CBDEF uint64_t cb__rng_splitmix64(uint64_t* state)
 {
     uint64_t z = (*state += 0x9E3779B97F4A7C15ull);
@@ -4398,7 +4697,7 @@ CBDEF uint64_t cb__rng_splitmix64(uint64_t* state)
 
 CBDEF void cb_rng_seed(CB_Rng* rng, uint64_t seed)
 {
-    // 用 splitmix64 把单个种子扩散成四个状态字；种子为 0 也能得到非零状态
+// splitmix64 spreads one seed into four state words; even seed 0 gives a non-zero state.
     uint64_t state = seed;
     for (int i = 0; i < 4; ++i) rng->state[i] = cb__rng_splitmix64(&state);
 }
@@ -4421,14 +4720,14 @@ CBDEF uint64_t cb_rng_next(CB_Rng* rng)
 
 CBDEF double cb_rng_double(CB_Rng* rng)
 {
-    // 取高 53 位，得到 [0,1) 上的均匀分布
+// The high 53 bits give a uniform double in [0,1).
     return (double)(cb_rng_next(rng) >> 11) * (1.0 / 9007199254740992.0);
 }
 
 CBDEF uint64_t cb_rng_range(CB_Rng* rng, uint64_t bound)
 {
     if (bound == 0) return 0;
-    // 拒绝采样，避免取模带来的偏斜
+// Rejection sampling: a plain modulo would skew the distribution.
     uint64_t limit = UINT64_MAX - (UINT64_MAX % bound) - 1;
     uint64_t value;
     do {
@@ -4459,18 +4758,8 @@ CBDEF void cb_rng_shuffle(CB_Rng* rng, void* items, size_t count, size_t elem_si
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // Runtime Environment
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-// ---- 声明 ----
-// 读环境变量（结果在 temp storage 上）。不存在返回 NULL（与 getenv 一致）。
-CBDEF char* cb_env_get(const char* name);
-CBDEF bool cb_env_set(const char* name, const char* value);
-// stdout 是否是终端（用于决定要不要上色）
-CBDEF bool cb_stdout_is_tty(void);
-// 终端宽度（取不到时返回 80）
-CBDEF int cb_terminal_width(void);
-// 是否该输出 ANSI 颜色：终端 + 未设置 NO_COLOR + 未显式关闭
-CBDEF bool cb_color_enabled(void);
 
-// ---- 定义 ----
+// ---- definitions ----
 CBDEF char* cb_env_get(const char* name)
 {
     const char* value = getenv(name);
@@ -4528,8 +4817,10 @@ CBDEF bool cb_color_enabled(void)
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // Hex Dump
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-// 把二进制内容按 16 字节一行打到 stderr（偏移 + 十六进制 + ASCII 列）。
-// 输出到 stderr 是为了不污染程序正常的 stdout。
+// Hex dump, 16 bytes per line, written to stderr (offset + hex + ASCII). Diagnostics go to
+// stderr so stdout stays clean:
+//     cb_dump_hex(bytes, sizeof(bytes));
+//     00000000  00 01 41 42 7f 80 ff                           |..AB...|
 CBDEF void cb_dump_hex(const void* data, size_t size)
 {
     const unsigned char* bytes = (const unsigned char*)data;
@@ -4552,45 +4843,8 @@ CBDEF void cb_dump_hex(const void* data, size_t size)
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // CLI Args
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-// 极简参数解析。规则：
-//   --key=value   选项，带值
-//   --key         开关
-//   -k            开关（等价于 --k）
-//   -k=value      选项，带值
-//   --            之后的全部当作位置参数
-//   其它          位置参数
-// 需要"--key value"这种空格分隔写法的场景，请把值写成 --key=value。
 
-typedef struct {
-    const char* name;  // 去掉前导 - / --
-    const char* value; // 开关为 NULL
-} CB_Arg_Entry;
-
-typedef struct {
-    CB_Arg_Entry* items;
-    size_t count;
-    size_t capacity;
-} CB_Arg_List;
-
-typedef struct {
-    CB_Arg_List options;
-    CB_File_Paths positionals;
-} CB_Args;
-
-// ---- 声明 ----
-// argc/argv 传 main 的原始值（argv[0] 会被当成程序名跳过）
-CBDEF void cb_args_parse(CB_Args* args, int argc, char** argv);
-// 是否存在该开关/选项
-CBDEF bool cb_args_has(const CB_Args* args, const char* name);
-// 取选项的值；不存在返回 fallback
-CBDEF const char* cb_args_get(const CB_Args* args, const char* name, const char* fallback);
-// 最近一次出现的值（同名多次出现时后者覆盖前者，这里也给"取第一次"的版本）
-CBDEF const char* cb_args_get_first(const CB_Args* args, const char* name);
-CBDEF size_t cb_args_positional_count(const CB_Args* args);
-CBDEF const char* cb_args_positional(const CB_Args* args, size_t index);
-CBDEF void cb_args_free(CB_Args* args);
-
-// ---- 定义 ----
+// ---- definitions ----
 CBDEF void cb_args_parse(CB_Args* args, int argc, char** argv)
 {
     bool only_positionals = false;
@@ -4606,14 +4860,14 @@ CBDEF void cb_args_parse(CB_Args* args, int argc, char** argv)
             only_positionals = true;
             continue;
         }
-        if (arg[0] != '-' || arg[1] == '\0') { // "-" 单独出现也算位置参数
+        if (arg[0] != '-' || arg[1] == '\0') { // a lone "-" is also a positional argument
             cb_da_append(&args->positionals, cb_temp_strdup(arg));
             continue;
         }
 
         const char* name = arg + 1;
         if (name[0] == '-') name += 1; // --key -> key
-        if (name[0] == '\0') {         // 单纯的一个 "--"以外的空名字
+        if (name[0] == '\0') {         // an empty name, as in a bare "--"
             cb_da_append(&args->positionals, cb_temp_strdup(arg));
             continue;
         }
@@ -4649,7 +4903,7 @@ CBDEF const char* cb_args_get_first(const CB_Args* args, const char* name)
 
 CBDEF const char* cb_args_get(const CB_Args* args, const char* name, const char* fallback)
 {
-    // 同名多次出现时取最后一次
+    // the last occurrence wins
     const char* found = NULL;
     for (size_t i = 0; i < args->options.count; ++i) {
         if (strcmp(args->options.items[i].name, name) == 0) found = args->options.items[i].value;
@@ -4683,42 +4937,6 @@ CBDEF void cb_args_free(CB_Args* args)
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // Process & FD
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-#ifdef _WIN32
-typedef HANDLE CB_Proc;
-#define CB_INVALID_PROC INVALID_HANDLE_VALUE
-typedef HANDLE CB_FD;
-#define CB_INVALID_FD INVALID_HANDLE_VALUE
-#else
-typedef int CB_Proc;
-#define CB_INVALID_PROC (-1)
-typedef int CB_FD;
-#define CB_INVALID_FD (-1)
-#endif // _WIN32
-
-CBDEF CB_FD cb_fd_open_read(const char* path);
-CBDEF CB_FD cb_fd_open_write(const char* path);
-CBDEF void cb_fd_close(CB_FD fd);
-
-typedef struct {
-    CB_FD read;
-    CB_FD write;
-} CB_Pipe;
-
-CBDEF bool cb_pipe_create(CB_Pipe* pp);
-
-typedef struct {
-    CB_Proc* items;
-    size_t count;
-    size_t capacity;
-} CB_Procs;
-
-CBDEF int cb__proc_wait_async(CB_Proc proc, int ms);
-// 等到该进程结束
-CBDEF bool cb_proc_wait(CB_Proc proc);
-// 等到所有进程结束
-CBDEF bool cb_procs_wait(CB_Procs procs);
-// 等待全部结束并把 procs 清空（可继续复用这个数组）
-CBDEF bool cb_procs_wait_and_reset(CB_Procs* procs);
 
 CBDEF CB_FD cb_fd_open_read(const char* path)
 {
@@ -4957,70 +5175,12 @@ CBDEF bool cb_procs_wait_and_reset(CB_Procs* procs)
     return success;
 }
 
-
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // Cmd
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-typedef struct {
-    const char** items;
-    size_t count;
-    size_t capacity;
-} CB_Cmd;
-
-// cb_cmd_run_opt() 的选项。
-typedef struct CB_Cmd_Opt {
-    // 异步执行：把 CB_Proc 追加到给定的 CB_Procs 数组
-    CB_Procs* async CB__DEFAULT(nullptr);
-    // .async 列表的并发上限；0 表示 cb_nprocs()
-    size_t max_procs CB__DEFAULT(0);
-    // 执行后不重置命令
-    bool dont_reset CB__DEFAULT(false);
-    // 把 stdin 重定向到文件
-    const char* stdin_path CB__DEFAULT(nullptr);
-    // 把 stdout 重定向到文件
-    const char* stdout_path CB__DEFAULT(nullptr);
-    // 把 stderr 重定向到文件
-    const char* stderr_path CB__DEFAULT(nullptr);
-} CB_Cmd_Opt;
-
-CBDEF void cb__cmd_append(CB_Cmd* cmd, size_t n, const char** args);
 #ifdef __cplusplus
-template <typename... Args>
-CBDEF void cb__cpp_cmd_append_wrapper(CB_Cmd* cmd, Args... strs)
-{
-    const char* args[] = {strs...};
-    cb__cmd_append(cmd, sizeof(args) / sizeof(args[0]), args);
-}
-#define cb_cmd_append(cmd, ...) cb__cpp_cmd_append_wrapper(cmd, __VA_ARGS__)
 #else
-#define cb_cmd_append(cmd, ...) \
-    cb__cmd_append(cmd, sizeof((const char*[]){__VA_ARGS__}) / sizeof(const char*), (const char*[]){__VA_ARGS__})
 #endif // __cplusplus
-
-// 把 other 的全部参数追加到 cmd 后面
-#define cb_cmd_extend(cmd, other_cmd) \
-    cb_da_append_many((cmd), (other_cmd)->items, (other_cmd)->count)
-// 释放 cmd 占用的内存（并清空句柄）
-#define cb_cmd_free(cmd) \
-    do {                     \
-        cb_da_free(cmd);     \
-        (cmd).items = NULL;  \
-        (cmd).count = 0;     \
-        (cmd).capacity = 0;  \
-    } while (0)
-
-CBDEF void cb_cmd_to_sb(CB_Cmd cmd, CB_String_Builder* sb);
-CBDEF int cb_nprocs(void);
-CBDEF CB_Proc cb__cmd_start_process(CB_Cmd cmd, CB_FD* fdin, CB_FD* fdout, CB_FD* fderr);
-CBDEF bool cb_cmd_run_opt(CB_Cmd* cmd, CB_Cmd_Opt opt);
-CBDEF bool cb__cmd_run_opt_with_location(CB_Cmd* cmd, const char* file, int line, CB_Cmd_Opt opt);
-#define cb_cmd_run(cmd, ...) cb__cmd_run_opt_with_location((cmd), __FILE__, __LINE__, CB_CLIT(CB_Cmd_Opt){__VA_ARGS__})
-
-typedef struct {
-    CB_FD fdin;
-    CB_Cmd cmd;
-    bool err2out;
-} CB_Pipes;
 
 CBDEF void cb__cmd_append(CB_Cmd* cmd, size_t n, const char** args)
 {
@@ -5046,8 +5206,8 @@ CBDEF void cb_cmd_to_sb(CB_Cmd cmd, CB_String_Builder* sb)
 }
 
 #ifdef _WIN32
-// 把命令渲染成 Windows 能接受的命令行字符串。
-// 规则见 https://learn.microsoft.com/en-gb/archive/blogs/twistylittlepassagesallalike/everyone-quotes-command-line-arguments-the-wrong-way
+// Render a command line the way Windows parses it:
+// https://learn.microsoft.com/en-gb/archive/blogs/twistylittlepassagesallalike/everyone-quotes-command-line-arguments-the-wrong-way
 CBDEF void cb__win32_cmd_quote(CB_Cmd cmd, CB_String_Builder* quoted)
 {
     for (size_t i = 0; i < cmd.count; ++i) {
@@ -5056,10 +5216,10 @@ CBDEF void cb__win32_cmd_quote(CB_Cmd cmd, CB_String_Builder* quoted)
         size_t len = strlen(arg);
         if (i > 0) cb_sb_append(quoted, ' ');
         if (len != 0 && NULL == strpbrk(arg, " \t\n\v\"")) {
-            // 不需要加引号
+            // no quoting needed
             cb_sb_append_buf(quoted, arg, len);
         } else {
-            // 需要转义：参数里的双引号，以及双引号前的连续反斜杠
+            // needs escaping: double quotes inside the argument, plus the backslashes before one
             size_t backslashes = 0;
             cb_sb_append(quoted, '\"');
             for (size_t j = 0; j < len; ++j) {
@@ -5068,7 +5228,7 @@ CBDEF void cb__win32_cmd_quote(CB_Cmd cmd, CB_String_Builder* quoted)
                     backslashes += 1;
                 } else {
                     if (x == '\"') {
-                        // 转义已有的反斜杠和这个双引号
+                        // escape the accumulated backslashes and this double quote
                         for (size_t k = 0; k < 1 + backslashes; ++k) {
                             cb_sb_append(quoted, '\\');
                         }
@@ -5077,7 +5237,7 @@ CBDEF void cb__win32_cmd_quote(CB_Cmd cmd, CB_String_Builder* quoted)
                 }
                 cb_sb_append(quoted, x);
             }
-            // 收尾前的反斜杠也要转义
+            // trailing backslashes need escaping too
             for (size_t k = 0; k < backslashes; ++k) {
                 cb_sb_append(quoted, '\\');
             }
@@ -5118,7 +5278,7 @@ CBDEF CB_Proc cb__cmd_start_process(CB_Cmd cmd, CB_FD* fdin, CB_FD* fdout, CB_FD
     STARTUPINFO siStartInfo;
     ZeroMemory(&siStartInfo, sizeof(siStartInfo));
     siStartInfo.cb = sizeof(STARTUPINFO);
-    // NOTE: 给 std 句柄传 NULL 理论上没问题（见 GetStdHandle 的 attach/detach 行为）
+    // NOTE: passing NULL for a std handle should be fine (see GetStdHandle attach/detach behavior)
     // TODO: check for errors in GetStdHandle
     siStartInfo.hStdError = fderr ? *fderr : GetStdHandle(STD_ERROR_HANDLE);
     siStartInfo.hStdOutput = fdout ? *fdout : GetStdHandle(STD_OUTPUT_HANDLE);
@@ -5168,7 +5328,7 @@ CBDEF CB_Proc cb__cmd_start_process(CB_Cmd cmd, CB_FD* fdin, CB_FD* fdout, CB_FD
             }
         }
 
-        // NOTE: 子进程里这一点内存泄漏无所谓（一次性的）
+        // NOTE: this small leak lives in the child process only and is a one-off
         CB_Cmd cmd_null = CB_ZERO;
         cb_da_append_many(&cmd_null, cmd.items, cmd.count);
         cb_da_append(&cmd_null, (const char*)NULL);
@@ -5256,64 +5416,14 @@ CBDEF bool cb__cmd_run_opt_with_location(CB_Cmd* cmd, const char* file, int line
     return ok;
 }
 
-
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-// Cmd Chain：把多条命令用管道串起来
+// Cmd Chain
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-// 用法（等价于 foo | bar | baz > out.txt）：
-//   CB_Chain chain = CB_ZERO;  CB_Cmd cmd = CB_ZERO;
-//   if (!cb_chain_begin(&chain)) return 1;
-//   cb_cmd_append(&cmd, "foo"); if (!cb_chain_cmd(&chain, &cmd)) return 1;
-//   cb_cmd_append(&cmd, "bar"); if (!cb_chain_cmd(&chain, &cmd)) return 1;
-//   cb_cmd_append(&cmd, "baz"); if (!cb_chain_cmd(&chain, &cmd)) return 1;
-//   if (!cb_chain_end(&chain, .stdout_path = "out.txt")) return 1;
-//
-// Chain 里唯一动态分配的是 .cmd，需要自己回收时 cb_da_free(chain.cmd) 即可。
 
-typedef struct {
-    // 上一条命令的输出端，会作为下一条命令的输入
-    CB_FD fdin;
-    // 最近一次 cb_chain_cmd() 累积的命令
-    CB_Cmd cmd;
-    // 最近一次 cb_chain_cmd() 的 .err2out
-    bool err2out;
-} CB_Chain;
-
-typedef struct CB_Chain_Begin_Opt {
-    const char* stdin_path CB__DEFAULT(nullptr);
-} CB_Chain_Begin_Opt;
-
-typedef struct CB_Chain_Cmd_Opt {
-    bool err2out CB__DEFAULT(false);
-    bool dont_reset CB__DEFAULT(false);
-} CB_Chain_Cmd_Opt;
-
-typedef struct CB_Chain_End_Opt {
-    CB_Procs* async CB__DEFAULT(nullptr);
-    size_t max_procs CB__DEFAULT(0);
-    const char* stdout_path CB__DEFAULT(nullptr);
-    const char* stderr_path CB__DEFAULT(nullptr);
-} CB_Chain_End_Opt;
-
-// 小工具：记录需要在收尾时关闭的 fd（一条链最多用到 3 个，留 5 个位置足够）
-typedef struct {
-    CB_FD items[5];
-    size_t count;
-} CB_Fd_List;
-
-// ---- 声明 ----
-CBDEF bool cb_chain_begin_opt(CB_Chain* chain, CB_Chain_Begin_Opt opt);
-CBDEF bool cb_chain_cmd_opt(CB_Chain* chain, CB_Cmd* cmd, CB_Chain_Cmd_Opt opt);
-CBDEF bool cb_chain_end_opt(CB_Chain* chain, CB_Chain_End_Opt opt);
-
-#define cb_chain_begin(chain, ...) cb_chain_begin_opt((chain), CB_CLIT(CB_Chain_Begin_Opt){__VA_ARGS__})
-#define cb_chain_cmd(chain, cmd, ...) cb_chain_cmd_opt((chain), (cmd), CB_CLIT(CB_Chain_Cmd_Opt){__VA_ARGS__})
-#define cb_chain_end(chain, ...) cb_chain_end_opt((chain), CB_CLIT(CB_Chain_End_Opt){__VA_ARGS__})
-
-// ---- 定义 ----
+// ---- definitions ----
 CBDEF void cb__fd_list_push(CB_Fd_List* list, CB_FD fd)
 {
-    if (list->count < CB_ARRAY_LEN(list->items)) list->items[list->count++] = fd;
+    cb_fa_append(list, fd); // the list has room for every stage; a full list would leak an fd
 }
 
 CBDEF void cb__fd_list_close_all(CB_Fd_List* list)
@@ -5351,7 +5461,7 @@ CBDEF bool cb_chain_cmd_opt(CB_Chain* chain, CB_Cmd* cmd, CB_Chain_Cmd_Opt opt)
 
     CB_ASSERT(cmd->count > 0);
 
-    if (chain->cmd.count != 0) { // 不是链上的第一条：先把上一条挂上管道跑起来
+    if (chain->cmd.count != 0) { // not the first stage: run the previous one with its output piped
         CB_FD* pfdin = NULL;
         if (chain->fdin != CB_INVALID_FD) {
             cb__fd_list_push(&fds, chain->fdin);
@@ -5392,11 +5502,11 @@ CBDEF bool cb_chain_end_opt(CB_Chain* chain, CB_Chain_End_Opt opt)
         pfdin = &chain->fdin;
     }
 
-    if (chain->cmd.count != 0) { // 链非空
+    if (chain->cmd.count != 0) { // the chain is not empty
         size_t max_procs = opt.max_procs > 0 ? opt.max_procs : (size_t)cb_nprocs() + 1;
 
         if (opt.async != NULL && max_procs > 0) {
-            // 达到并发上限就先等一个空位出来
+            // wait until a concurrency slot frees up
             while (opt.async->count >= max_procs) {
                 for (size_t i = 0; i < opt.async->count; ++i) {
                     int ret = cb__proc_wait_async(opt.async->items[i], 1);
@@ -5426,8 +5536,8 @@ CBDEF bool cb_chain_end_opt(CB_Chain* chain, CB_Chain_End_Opt opt)
                 cb__fd_list_push(&fds, fderr);
                 pfderr = &fderr;
             } else {
-                // 最后一条命令设了 err2out：它的 stderr 已经并进 stdout，
-                // 所以 stderr 文件应该是空的（这里显式建一个空文件，语义才一致）
+                // err2out was set on the last command, so its stderr already went to stdout:
+                // create the stderr file empty, which keeps the semantics consistent
                 CB_ASSERT(chain->err2out);
                 if (!cb_write_entire_file(opt.stderr_path, NULL, 0)) cb_return_defer(false);
             }
@@ -5452,37 +5562,6 @@ defer:
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // C Builder
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-#ifndef CB_SELF_REBUILD
-#if defined(_WIN32)
-#if defined(__clang__)
-#if defined(__cplusplus)
-#define CB_SELF_REBUILD(binary_path, source_path) "clang", "-x", "c++", "-o", binary_path, source_path
-#else
-#define CB_SELF_REBUILD(binary_path, source_path) "clang", "-x", "c", "-o", binary_path, source_path
-#endif
-#elif defined(__GNUC__)
-#if defined(__cplusplus)
-#define CB_SELF_REBUILD(binary_path, source_path) "gcc", "-x", "c++", "-o", binary_path, source_path
-#else
-#define CB_SELF_REBUILD(binary_path, source_path) "gcc", "-x", "c", "-o", binary_path, source_path
-#endif
-#elif defined(_MSC_VER)
-#define CB_SELF_REBUILD(binary_path, source_path) "cl.exe", cb_temp_sprintf("/Fe:%s", (binary_path)), source_path
-#elif defined(__TINYC__)
-#define CB_SELF_REBUILD(binary_path, source_path) "tcc", "-o", binary_path, source_path
-#endif
-#else
-#if defined(__cplusplus)
-#define CB_SELF_REBUILD(binary_path, source_path) "cc", "-x", "c++", "-o", binary_path, source_path
-#else
-#define CB_SELF_REBUILD(binary_path, source_path) "cc", "-x", "c", "-o", binary_path, source_path
-#endif
-#endif
-#endif
-
-CBDEF int cb_needs_rebuild(const char* binary_path, const char** source_paths, size_t source_paths_count);
-CBDEF void cb__self_rebuild(int argc, char** argv, const char* source_path, ...);
-#define CB_SELF_REBUILD_PLUS(argc, argv, ...) cb__self_rebuild(argc, argv, __FILE__, __VA_ARGS__, NULL)
 
 CBDEF int cb_needs_rebuild(const char* binary_path, const char** source_paths, size_t source_paths_count)
 {
@@ -5491,7 +5570,7 @@ CBDEF int cb_needs_rebuild(const char* binary_path, const char** source_paths, s
 
     HANDLE output_path_fd = CreateFile(binary_path, GENERIC_READ, 0, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_READONLY, NULL);
     if (output_path_fd == INVALID_HANDLE_VALUE) {
-        // NOTE: 输出不存在，那必然需要重新构建
+        // NOTE: a missing output always means a rebuild
         if (GetLastError() == ERROR_FILE_NOT_FOUND) return 1;
         cb_log(CB_ERROR, "Could not open file %s: %s", binary_path, cb_win32_error_message(GetLastError()));
         return -1;
@@ -5508,7 +5587,7 @@ CBDEF int cb_needs_rebuild(const char* binary_path, const char** source_paths, s
         const char* input_path = source_paths[i];
         HANDLE input_path_fd = CreateFile(input_path, GENERIC_READ, 0, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_READONLY, NULL);
         if (input_path_fd == INVALID_HANDLE_VALUE) {
-            // NOTE: 源文件不存在是错误，构建本来就依赖它
+            // NOTE: a missing source file is an error, the build depends on it
             cb_log(CB_ERROR, "Could not open file %s: %s", input_path, cb_win32_error_message(GetLastError()));
             return -1;
         }
@@ -5520,7 +5599,7 @@ CBDEF int cb_needs_rebuild(const char* binary_path, const char** source_paths, s
             return -1;
         }
 
-        // NOTE: 只要有一个源文件比输出新，就必须重新构建
+        // NOTE: one source newer than the output is enough to force a rebuild
         if (CompareFileTime(&input_path_time, &output_path_time) == 1) return 1;
     }
 
@@ -5529,7 +5608,7 @@ CBDEF int cb_needs_rebuild(const char* binary_path, const char** source_paths, s
     struct stat statbuf = CB_ZERO;
 
     if (stat(binary_path, &statbuf) < 0) {
-        // NOTE: 输出不存在就必须重建
+        // NOTE: a missing output must be rebuilt
         if (errno == ENOENT) return 1;
         cb_log(CB_ERROR, "Could not stat %s: %s", binary_path, strerror(errno));
         return -1;
@@ -5539,12 +5618,12 @@ CBDEF int cb_needs_rebuild(const char* binary_path, const char** source_paths, s
     for (size_t i = 0; i < source_paths_count; ++i) {
         const char* input_path = source_paths[i];
         if (stat(input_path, &statbuf) < 0) {
-            // NOTE: 输入不存在是错误（构建本来就依赖它）
+            // NOTE: a missing input is an error (the build depends on it)
             cb_log(CB_ERROR, "Could not stat %s: %s", input_path, strerror(errno));
             return -1;
         }
         time_t source_path_time = statbuf.st_mtime;
-        // NOTE: 只要有一个源文件比输出新，就必须重建
+        // NOTE: one source newer than the output forces a rebuild
         if (source_path_time > binary_path_time) return 1;
     }
 
@@ -5552,12 +5631,13 @@ CBDEF int cb_needs_rebuild(const char* binary_path, const char** source_paths, s
 #endif // _WIN32
 }
 
-// 思路取自 nob.h（后者取自 https://github.com/zhiayang/nabs）
+// Idea taken from nob.h, which took it from https://github.com/zhiayang/nabs
 CBDEF void cb__self_rebuild(int argc, char** argv, const char* source_path, ...)
 {
     const char* binary_path = cb_shift(argv, argc);
 #ifdef _WIN32
-    // Windows 上可执行文件通常不带扩展名（是 ./cb 而不是 ./cb.exe），改扩展名时要补上。
+    // On Windows the executable is usually invoked without the extension (./cb, not ./cb.exe),
+    // so add it back when renaming.
     if (!cb_sv_ends_with_cstr(cb_sv_from_cstr(binary_path), ".exe")) {
         binary_path = cb_temp_sprintf("%s.exe", binary_path);
     }
@@ -5585,7 +5665,7 @@ CBDEF void cb__self_rebuild(int argc, char** argv, const char* source_path, ...)
     const char* old_binary_path = cb_temp_sprintf("%s.old", binary_path);
 
     if (!cb_rename(binary_path, old_binary_path)) exit(1);
-    cb_cmd_append(&cmd, CB_SELF_REBUILD(binary_path, source_path));
+    cb_cmd_append(&cmd, CB_REBUILD_URSELF(binary_path, source_path));
     CB_Cmd_Opt opt = CB_ZERO;
     if (!cb_cmd_run_opt(&cmd, opt)) {
         cb_rename(old_binary_path, binary_path);
@@ -5601,113 +5681,43 @@ CBDEF void cb__self_rebuild(int argc, char** argv, const char* source_path, ...)
     if (!cb_cmd_run_opt(&cmd, opt)) exit(1);
     exit(0);
 }
-
-// 每个宏都要有自己的 #ifndef 守卫：这一整块只是"默认值"，调用方（比如项目的构建脚本）
-// 可以在 #include "cb.h" 之前定义自己的 cb_cc / cb_cc_flags 把它顶掉。
-// TODO: we should test on C++ compilers too
 #ifndef cb_cc_flags
 #if defined(__cplusplus)
-#if defined(_MSC_VER)
-#define cb_cc_flags(cmd) cb_cmd_append(cmd, "/std:c++20", "/TP", "/W4", "/nologo", "/D_CRT_SECURE_NO_WARNINGS", "-I.")
-#else
-#ifndef cb_cc
-#define cb_cc(cmd) cb_cmd_append(cmd, "cc", "-x", "c++")
-#endif
-#define cb_cc_flags(cmd) cb_cmd_append(cmd, "-Wall", "-Wextra", "-Wno-missing-field-initializers", "-Wswitch-enum", "-ggdb", "-I.");
-#endif
 #else // __cplusplus
-#if defined(_MSC_VER)
-#define cb_cc_flags(cmd) cb_cmd_append(cmd, "/TC", "/W4", "/nologo", "/D_CRT_SECURE_NO_WARNINGS", "-I.")
-#elif defined(__APPLE__) || defined(__MACH__)
-// "-std=c11" / "-D_POSIX_C_SOURCE=200809L" 在 macOS 上会藏掉需要的符号（原因不明）
-#define cb_cc_flags(cmd) cb_cmd_append(cmd, "-Wall", "-Wextra", "-Wswitch-enum", "-I.")
-#elif defined(__FreeBSD__)
-// "-D_POSIX_C_SOURCE=200809L" 在 FreeBSD 上会藏掉需要的符号
-#define cb_cc_flags(cmd) cb_cmd_append(cmd, "-Wall", "-Wextra", "-Wswitch-enum", "-std=c11", "-ggdb", "-I.");
-#else
-#define cb_cc_flags(cmd) cb_cmd_append(cmd, "-Wall", "-Wextra", "-Wswitch-enum", "-std=c11", "-D_POSIX_C_SOURCE=200809L", "-ggdb", "-I.");
-#endif
 #endif // __cplusplus
 #endif // !cb_cc_flags
 
-#ifndef cb_cc
-#if _WIN32
-#if defined(__GNUC__)
-#define cb_cc(cmd) cb_cmd_append(cmd, "cc")
-#elif defined(__clang__)
-#define cb_cc(cmd) cb_cmd_append(cmd, "clang")
-#elif defined(_MSC_VER)
-#define cb_cc(cmd) cb_cmd_append(cmd, "cl.exe")
-#elif defined(__TINYC__)
-#define cb_cc(cmd) cb_cmd_append(cmd, "tcc")
-#endif
-#else
-#define cb_cc(cmd) cb_cmd_append(cmd, "cc")
-#endif
-#endif // cb_cc
+#endif /* CB_IMPLEMENTATION */
 
-#ifndef cb_cc_flags
-#if defined(_MSC_VER) && !defined(__clang__)
-#define cb_cc_flags(cmd) cb_cmd_append(cmd, "/W4", "/nologo", "/D_CRT_SECURE_NO_WARNINGS")
-#else
-#define cb_cc_flags(cmd) cb_cmd_append(cmd, "-Wall", "-Wextra")
-#endif
-#endif // cb_cc_flags
-
-#ifndef cb_cc_output
-#if defined(_MSC_VER) && !defined(__clang__)
-#define cb_cc_output(cmd, output_path) cb_cmd_append(cmd, cb_temp_sprintf("/Fe:%s", (output_path)), cb_temp_sprintf("/Fo:%s", (output_path)))
-#else
-#define cb_cc_output(cmd, output_path) cb_cmd_append(cmd, "-o", (output_path))
-#endif
-#endif // cb_cc_output
-
-#ifndef cb_cc_inputs
-#define cb_cc_inputs(cmd, ...) cb_cmd_append(cmd, __VA_ARGS__)
-#endif // cb_cc_inputs
-
-#endif // STD_CB_H
-
-// >>> CB_STRIP_PREFIX 生成区开始（tools/gen-docs.py 生成，不要手改）
+// >>> CB_STRIP_PREFIX
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-// CB_STRIP_PREFIX：去前缀别名
+// CB_STRIP_PREFIX
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-// 默认不生效。在 #include "cb.h" 之前 #define CB_STRIP_PREFIX，就能写
-// temp_sprintf / String_View，而不是 cb_temp_sprintf / CB_String_View。
+// Off by default. Define CB_STRIP_PREFIX before including cb.h to write temp_sprintf /
+// String_View instead of cb_temp_sprintf / CB_String_View.
 //
-// 为什么放在文件最末尾：实现区用的都是带前缀的名字，别名区如果放在前面会互相干扰。
-// 自带 include guard，header-only 模式下被多个 .c 各自 include 也只展开一次。
+// This region sits at the very end on purpose: the definitions above use the prefixed names, so
+// aliases placed earlier would interfere with them. It has its own guard, so including cb.h from
+// several .c files expands it once per file.
 //
-// 刻意不生成别名的名字（去掉前缀会与标准库 / POSIX / 系统库 / 第三方库撞车）：
-//   ERROR            撞 mingw <wingdi.h> 的 #define ERROR 0
-//   PATH_MAX         撞 limits.h 的 PATH_MAX（CB_PATH_MAX 本身就是从它兜底来的）
-//   clamp            撞 C++ std::clamp
-//   glob             撞 POSIX glob.h 的 glob()
-//   log              撞 libm 的 log()
-//   max              撞 Windows 的 max 宏、C++ std::max
-//   min              撞 Windows 的 min 宏、C++ std::min
-//   rename           撞 stdio.h 的 rename()
-//   rotl64           撞 C23 <stdbit.h> / glibc 的 rotl64
-//   rotr64           撞 C23 <stdbit.h> / glibc 的 rotr64
-//   swap             撞 C++ std::swap
-//
-// 名单不是凭印象列的：拿 libc/libm/libpthread、mingw 导入库的真实导出符号，
-// 以及 clang/mingw -dM -E 的全部系统宏扫出来比对，命中的就是上面这些名字。
-//
-// 本区由 tools/gen-docs.py 生成，不要手改；./cb docs --check 会校验它与 cb.h 是否同步。
+// Names deliberately NOT aliased (dropping the prefix would collide):
+//   ERROR     mingw <wingdi.h> defines ERROR
+//   PATH_MAX  limits.h defines it (CB_PATH_MAX is the fallback for exactly that)
+//   clamp     C++ std::clamp
+//   glob      POSIX glob()
+//   log       libm log()
+//   max/min   Windows macros, C++ std::max / std::min
+//   rename    stdio.h rename()
+//   rotl64    C23 <stdbit.h>, glibc
+//   rotr64    C23 <stdbit.h>, glibc
+//   swap      C++ std::swap
 #ifndef CB_STRIP_PREFIX_GUARD_
 #define CB_STRIP_PREFIX_GUARD_
 #  ifdef CB_STRIP_PREFIX
-// ---- 版本 ----
-#    define VERSION_MAJOR CB_VERSION_MAJOR
-#    define VERSION_MINOR CB_VERSION_MINOR
-#    define VERSION_PATCH CB_VERSION_PATCH
-#    define VERSION_STRING CB_VERSION_STRING
 // ---- General ----
 #    define ASSERT CB_ASSERT
 #    define PRINTF_FORMAT CB_PRINTF_FORMAT
-#    define SHARED_STATE CB_SHARED_STATE
-// ---- 内存分配收口 ----
+// ---- Allocator ----
 #    define CLIT CB_CLIT
 #    define DECLTYPE_CAST CB_DECLTYPE_CAST
 #    define FREE CB_FREE
@@ -5738,6 +5748,8 @@ CBDEF void cb__self_rebuild(int argc, char** argv, const char* source_path, ...)
 #    define default_log_handler cb_default_log_handler
 #    define get_log_handler cb_get_log_handler
 #    define log_at cb_log_at
+#    define log_handler cb_log_handler
+#    define minimal_log_level cb_minimal_log_level
 #    define null_log_handler cb_null_log_handler
 #    define return_defer cb_return_defer
 #    define set_log_handler cb_set_log_handler
@@ -5803,6 +5815,7 @@ CBDEF void cb__self_rebuild(int argc, char** argv, const char* source_path, ...)
 #    define da_remove_unordered cb_da_remove_unordered
 #    define da_reserve cb_da_reserve
 #    define da_resize cb_da_resize
+#    define fa_append cb_fa_append
 // ---- Bitset ----
 #    define BITSET_WORD_BITS CB_BITSET_WORD_BITS
 #    define Bitset CB_Bitset
@@ -5834,6 +5847,7 @@ CBDEF void cb__self_rebuild(int argc, char** argv, const char* source_path, ...)
 #    define sb_append cb_sb_append
 #    define sb_append_buf cb_sb_append_buf
 #    define sb_append_cstr cb_sb_append_cstr
+#    define sb_append_null cb_sb_append_null
 #    define sb_append_sv cb_sb_append_sv
 #    define sb_appendf cb_sb_appendf
 #    define sb_free cb_sb_free
@@ -5867,7 +5881,8 @@ CBDEF void cb__self_rebuild(int argc, char** argv, const char* source_path, ...)
 #    define sv_trim_right cb_sv_trim_right
 // ---- UTF-8 Support ----
 #    define sv_utf8_len cb_sv_utf8_len
-// ---- StringView Tools（大小写 / 数字解析 / split-join） ----
+#    define bytes_for_utf8 cb_bytes_for_utf8
+// ---- StringView Tools ----
 #    define sb_append_join cb_sb_append_join
 #    define sv_eq_ignore_case cb_sv_eq_ignore_case
 #    define sv_split_next cb_sv_split_next
@@ -5904,7 +5919,7 @@ CBDEF void cb__self_rebuild(int argc, char** argv, const char* source_path, ...)
 #    define map_next cb_map_next
 #    define map_put cb_map_put
 #    define map_put_cstr cb_map_put_cstr
-// ---- HashMap：uint64 键版本 ----
+// ---- HashMap (uint64 keys) ----
 #    define Map_U64 CB_Map_U64
 #    define Map_U64_Iter CB_Map_U64_Iter
 #    define Map_U64_Slot CB_Map_U64_Slot
@@ -5921,6 +5936,7 @@ CBDEF void cb__self_rebuild(int argc, char** argv, const char* source_path, ...)
 #    define map_u64_next cb_map_u64_next
 #    define map_u64_put cb_map_u64_put
 // ---- File System ----
+#    define Dir_Entry CB_Dir_Entry
 #    define FILE_DIRECTORY CB_FILE_DIRECTORY
 #    define FILE_ERROR CB_FILE_ERROR
 #    define FILE_OTHER CB_FILE_OTHER
@@ -5959,7 +5975,7 @@ CBDEF void cb__self_rebuild(int argc, char** argv, const char* source_path, ...)
 #    define walk_dir_opt cb_walk_dir_opt
 #    define win32_error_message cb_win32_error_message
 #    define write_entire_file cb_write_entire_file
-// ---- 路径处理 ----
+// ---- Path ----
 #    define PATH_SEP CB_PATH_SEP
 #    define path_absolute cb_path_absolute
 #    define path_is_absolute cb_path_is_absolute
@@ -5967,7 +5983,7 @@ CBDEF void cb__self_rebuild(int argc, char** argv, const char* source_path, ...)
 #    define path_join cb_path_join
 #    define path_normalize cb_path_normalize
 #    define path_replace_ext cb_path_replace_ext
-// ---- File System 扩展：元信息 / 递归建目录 / 原子写 / 符号链接 / glob / mmap ----
+// ---- File System Extras ----
 #    define Mmap CB_Mmap
 #    define PROCESS_ID CB_PROCESS_ID
 #    define create_symlink cb_create_symlink
@@ -6042,7 +6058,7 @@ CBDEF void cb__self_rebuild(int argc, char** argv, const char* source_path, ...)
 #    define cmd_run_opt cb_cmd_run_opt
 #    define cmd_to_sb cb_cmd_to_sb
 #    define nprocs cb_nprocs
-// ---- Cmd Chain：把多条命令用管道串起来 ----
+// ---- Cmd Chain ----
 #    define Chain CB_Chain
 #    define Chain_Begin_Opt CB_Chain_Begin_Opt
 #    define Chain_Cmd_Opt CB_Chain_Cmd_Opt
@@ -6055,8 +6071,8 @@ CBDEF void cb__self_rebuild(int argc, char** argv, const char* source_path, ...)
 #    define chain_end cb_chain_end
 #    define chain_end_opt cb_chain_end_opt
 // ---- C Builder ----
+#    define REBUILD_URSELF CB_REBUILD_URSELF
 #    define SELF_REBUILD CB_SELF_REBUILD
-#    define SELF_REBUILD_PLUS CB_SELF_REBUILD_PLUS
 #    define cc cb_cc
 #    define cc_flags cb_cc_flags
 #    define cc_inputs cb_cc_inputs
@@ -6064,4 +6080,4 @@ CBDEF void cb__self_rebuild(int argc, char** argv, const char* source_path, ...)
 #    define needs_rebuild cb_needs_rebuild
 #  endif // CB_STRIP_PREFIX
 #endif // CB_STRIP_PREFIX_GUARD_
-// <<< CB_STRIP_PREFIX 生成区结束
+// <<< end of CB_STRIP_PREFIX

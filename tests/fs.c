@@ -1,5 +1,3 @@
-// File System 扩展实测：元信息 / mkdir -p / 原子写 / 符号链接 / glob / mmap
-// 工作目录是 build/tests/fs.cwd（构建脚本每次运行前清空重建）
 #include "test_diagnostics.h"
 #include "cb.h"
 
@@ -23,13 +21,12 @@ static void test_meta(void)
            (int)(meta_type == CB_FILE_REGULAR), (int)(meta_type != CB_FILE_DIRECTORY),
            (int)(meta_type != CB_FILE_SYMLINK));
 
-    // 时间戳本身每次运行都不同，不能进 golden；只记录它是否是个合理的时间
     printf("cb_file_mtime(meta.txt) > 1600000000 -> %d\n", (int)(cb_file_mtime("meta.txt") > 1600000000));
 
     printf("不存在的文件 size 返回 -1 -> %d\n", (int)(cb_file_size("no-such-file") == (size_t)-1));
     printf("不存在的文件 mtime = %lld\n", (long long)cb_file_mtime("no-such-file"));
     {
-        // get_file_type 失败会打日志，静音掉免得刷屏
+
         CB_Log_Level saved = cb_minimal_log_level;
         cb_minimal_log_level = CB_NO_LOGS;
         printf("不存在的路径返回 CB_FILE_ERROR -> %d\n",
@@ -46,7 +43,7 @@ static void test_read_entire_file_errors(void)
     printf("\n== 回归：cb_read_entire_file 的错误处理 ==\n");
 
     CB_Log_Level saved = cb_minimal_log_level;
-    cb_minimal_log_level = CB_NO_LOGS; // 预期失败，不用刷屏
+    cb_minimal_log_level = CB_NO_LOGS;
 
     CB_String_Builder sb = CB_ZERO;
     printf("读不存在的文件 -> %d\n", (int)cb_read_entire_file("definitely-not-here.txt", &sb));
@@ -57,11 +54,9 @@ static void test_read_entire_file_errors(void)
     printf("读正常文件 -> %d，count = %zu，内容 = |%.*s|\n", (int)got, sb.count, (int)sb.count,
            sb.items != NULL ? sb.items : "");
 
-    // 读目录：fopen 成功但读取失败，必须优雅返回 false
     sb.count = 0;
     printf("读目录 -> %d\n", (int)cb_read_entire_file(".", &sb));
 
-    // 追加语义：同一个 sb 再读一次应当是追加而不是覆盖
     sb.count = 0;
     cb_read_entire_file("ok.txt", &sb);
     cb_read_entire_file("ok.txt", &sb);
@@ -96,14 +91,12 @@ static void test_atomic_write(void)
     printf("读回 atomic.txt -> %d\n", (int)cb_read_entire_file("atomic.txt", &sb));
     printf("内容是 |%.*s|（%zu 字节）\n", (int)sb.count, sb.items != NULL ? sb.items : "", sb.count);
 
-    // 覆盖写：内容要完全替换
     printf("原子写覆盖 version-2 -> %d\n", (int)cb_write_entire_file_atomic("atomic.txt", "version-2", 9));
     sb.count = 0;
     printf("再次读回 -> %d\n", (int)cb_read_entire_file("atomic.txt", &sb));
     printf("覆盖后内容是 |%.*s|（%zu 字节）\n", (int)sb.count, sb.items != NULL ? sb.items : "", sb.count);
     cb_sb_free(sb);
 
-    // 不应留下临时文件
     CB_File_Paths entries = CB_ZERO;
     printf("列目录 -> %d\n", (int)cb_read_entire_dir(".", &entries));
     size_t tmp_count = 0;
@@ -119,14 +112,10 @@ static void test_symlink(void)
     printf("\n== 符号链接 ==\n");
 
 #ifdef _WIN32
-    // Windows 下建符号链接要开发者模式或管理员权限，而且不同环境的行为还不一致：
-    // CI 的 wine 里 CreateSymbolicLink 会"报成功"但链接其实不可用（lstat 看不到它、
-    // readlink 读不出来），同一份 golden 于是有的机器过、有的机器挂。
-    // Linux 下建链接是普通操作，完整覆盖保留在下面；Windows 下整段跳过，输出在任何
-    // Windows 环境（真机 / 各种 wine 配置 / 有没有权限）下都逐字节一致。
+
     printf("Windows 下跳过符号链接用例（建链接需要开发者模式或管理员权限）\n");
     return;
-#endif // _WIN32
+#endif
 
     printf("创建目标文件 target.txt -> %d\n", (int)cb_write_entire_file("target.txt", "target-data", 11));
     printf("创建符号链接 link.txt -> %d\n", (int)cb_create_symlink("target.txt", "link.txt"));
@@ -134,7 +123,7 @@ static void test_symlink(void)
     int link_type = cb_get_file_type("link.txt");
     printf("识别出符号链接 -> %d\n", (int)(link_type == CB_FILE_SYMLINK));
     printf("普通文件不是链接 -> %d\n", (int)(cb_get_file_type("target.txt") != CB_FILE_SYMLINK));
-    // 注意语义：cb_get_file_type 用 lstat，不跟随链接，所以链接本身不是 regular
+
     printf("不跟随链接（lstat 语义）-> %d\n", (int)(link_type != CB_FILE_REGULAR));
 
     char* dest = cb_read_symlink("link.txt");
@@ -145,7 +134,6 @@ static void test_symlink(void)
     printf("读到的内容 = |%.*s|（%zu 字节）\n", (int)sb.count, sb.items != NULL ? sb.items : "", sb.count);
     cb_sb_free(sb);
 
-    // 预期失败探测：静音日志，否则终端上会多一行 "Could not read symlink ..."，看着像出了问题。
     {
         CB_Log_Level saved = cb_minimal_log_level;
         cb_minimal_log_level = CB_NO_LOGS;
@@ -237,21 +225,19 @@ static void test_mmap(void)
     cb_mmap_close(&m);
     printf("close 清空句柄 = %d\n", (int)(m.data == NULL && m.size == 0));
 
-    // 空文件：长度 0 无法 mmap，应返回一个空视图而不是失败
     printf("写空文件 empty.txt -> %d\n", (int)cb_write_entire_file("empty.txt", "", 0));
     CB_Mmap e = CB_ZERO;
     printf("空文件 mmap 成功 -> %d\n", (int)cb_mmap_open("empty.txt", &e));
     printf("空文件给的是空视图 = %d\n", (int)(e.data == NULL && e.size == 0));
     cb_mmap_close(&e);
 
-    // 不存在的文件应失败且不崩
     CB_Mmap missing = CB_ZERO;
     CB_Log_Level saved = cb_minimal_log_level;
-    cb_minimal_log_level = CB_NO_LOGS; // 预期报错，静音
+    cb_minimal_log_level = CB_NO_LOGS;
     bool opened = cb_mmap_open("no-such-file.bin", &missing);
     cb_minimal_log_level = saved;
     printf("打开不存在的文件 -> %d\n", (int)opened);
-    cb_mmap_close(&missing); // 失败之后 close 也必须安全，且句柄可再次使用
+    cb_mmap_close(&missing);
 
     printf("同一个句柄可以重新打开 -> %d\n", (int)cb_mmap_open("map.txt", &missing));
     printf("重新打开的映射长度 = %zu\n", missing.size);

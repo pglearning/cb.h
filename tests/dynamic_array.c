@@ -12,7 +12,7 @@ int main(void)
 
     cb_da_append_many(&array, array.items, array.count);
 
-    (void)cb_da_pop(&array); // 丢弃返回值时显式转 void
+    (void)cb_da_pop(&array);
     printf("%s\n", cb_da_pop(&array));
 
     (void)cb_da_first(&array);
@@ -22,7 +22,7 @@ int main(void)
     printf("%s\n", cb_da_last(&array));
 
     cb_da_remove_unordered(&array, 2);
-    
+
     size_t index;
     cb_da_foreach(const char*, x, &array) {
         *x = "z";

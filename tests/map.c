@@ -1,5 +1,3 @@
-// HashMap（字符串键 + uint64 键）的实测
-// 覆盖：插入/覆盖/查找/删除/墓碑复用/扩容/遍历/预分配/arena 后端/大数据量
 #include "test_diagnostics.h"
 #include "cb.h"
 
@@ -16,7 +14,6 @@ static void test_map_basic(void)
     cb_map_put_cstr(&m, "pi", (void*)(intptr_t)314);
     printf("插入两条后 count = %zu\n", m.count);
 
-    // get 前把 v 置空，避免查不到时打出上一次的残留值
     v = NULL;
     bool got_answer = cb_map_get_cstr(&m, "answer", &v);
     printf("get answer -> %d，值 = %lld\n", (int)got_answer, (long long)(intptr_t)v);
@@ -29,14 +26,12 @@ static void test_map_basic(void)
     printf("get 不存在的键 e -> %d\n", (int)cb_map_get_cstr(&m, "e", &v));
     printf("has(pi) -> %d\n", (int)cb_map_has(&m, cb_sv_from_cstr("pi")));
 
-    // 覆盖：count 不应增长
     cb_map_put_cstr(&m, "answer", (void*)(intptr_t)7);
     v = NULL;
     bool got_overwritten = cb_map_get_cstr(&m, "answer", &v);
     printf("同键覆盖后 count = %zu，get answer -> %d，值 = %lld\n", m.count, (int)got_overwritten,
            (long long)(intptr_t)v);
 
-    // 键被复制：改掉原字符串不影响 map
     char buf[16];
     memcpy(buf, "tempkey", 8);
     cb_map_put_cstr(&m, buf, (void*)(intptr_t)1);
@@ -45,20 +40,17 @@ static void test_map_basic(void)
     bool got_copied = cb_map_get_cstr(&m, "tempkey", &v);
     printf("键被复制（原串已改）后 get tempkey -> %d，值 = %lld\n", (int)got_copied, (long long)(intptr_t)v);
 
-    // 空串也是合法键
     cb_map_put_cstr(&m, "", (void*)(intptr_t)9);
     v = NULL;
     bool got_empty = cb_map_get_cstr(&m, "", &v);
     printf("空串作为键：get \"\" -> %d，值 = %lld\n", (int)got_empty, (long long)(intptr_t)v);
 
-    // 带 NUL 的二进制键
     cb_map_put(&m, cb_sv_from_parts("a\0b", 3), (void*)(intptr_t)5);
     v = NULL;
     bool got_nul = cb_map_get(&m, cb_sv_from_parts("a\0b", 3), &v);
     printf("含 NUL 的键：get(\"a\\0b\", 3) -> %d，值 = %lld\n", (int)got_nul, (long long)(intptr_t)v);
     printf("前缀不同的键不相等（has(\"a\")）-> %d\n", (int)cb_map_has(&m, cb_sv_from_cstr("a")));
 
-    // 值可以是 NULL
     cb_map_put_cstr(&m, "nullval", NULL);
     printf("值为 NULL 也能查到存在（has(nullval)）-> %d\n",
            (int)cb_map_has(&m, cb_sv_from_cstr("nullval")));
@@ -83,7 +75,6 @@ static void test_map_delete(void)
     }
     printf("插入 200 条后 count = %zu\n", m.count);
 
-    // 删掉一半
     bool del_all_ok = true;
     for (int i = 0; i < N; i += 2) {
         if (!cb_map_del(&m, cb_sv_from_cstr(keys[i]))) {
@@ -97,14 +88,13 @@ static void test_map_delete(void)
     for (int i = 0; i < N; ++i) {
         bool found = cb_map_get_cstr(&m, keys[i], &v);
         if (i % 2 == 0) {
-            if (found) survivors_bad += 1; // 应已删除
+            if (found) survivors_bad += 1;
         } else {
-            if (!found || (intptr_t)v != i + 1) survivors_bad += 1; // 应还在且值正确
+            if (!found || (intptr_t)v != i + 1) survivors_bad += 1;
         }
     }
     printf("删除后存活项中该删没删/值不对的条数 = %zu\n", survivors_bad);
 
-    // 删除后再插满：墓碑应被复用，count 正确
     for (int i = 0; i < N; i += 2) {
         cb_map_put_cstr(&m, keys[i], (void*)(intptr_t)(i + 1000));
     }
@@ -133,7 +123,7 @@ static void test_map_iter(void)
 
     CB_Map m = CB_ZERO;
     cb_map_init_capacity(&m, 1000);
-    // 预分配会按 3/4 负载因子留余量，再向上取到 2 的幂
+
     printf("init_capacity(1000) 后 capacity = %zu（>= 1000*4/3 = %d）\n", m.capacity,
            (int)(m.capacity >= 1000 * 4 / 3));
     size_t capacity_before = m.capacity;
@@ -144,7 +134,7 @@ static void test_map_iter(void)
         snprintf(key, sizeof(key), "k%d", i);
         cb_map_put_cstr(&m, key, (void*)(intptr_t)i);
     }
-    // 预分配足够，插 500 条不应触发扩容
+
     printf("插入 500 条后 capacity = %zu（与预分配相同 = %d）\n", m.capacity,
            (int)(m.capacity == capacity_before));
 
@@ -158,7 +148,6 @@ static void test_map_iter(void)
     }
     printf("遍历访问到 %zu 条，值总和 = %lld\n", visited, (long long)sum);
 
-    // 遍历空 map
     CB_Map empty = CB_ZERO;
     visited = 0;
     cb_map_foreach(&empty, it2) { CB_UNUSED(it2); visited += 1; }
@@ -174,7 +163,6 @@ static void test_map_grow(void)
     CB_Map m = CB_ZERO;
     void* v = NULL;
 
-    // 远超初始容量，触发多次 rehash
     enum { N = 5000 };
     char** keys = (char**)cb_temp_alloc(N * sizeof(char*));
     for (int i = 0; i < N; ++i) {
@@ -216,7 +204,6 @@ static void test_map_arena(void)
     bool got = cb_map_get_cstr(&m, "a77", &v);
     printf("arena 后端 get a77 -> %d，值 = %lld\n", (int)got, (long long)(intptr_t)v);
 
-    // arena 模式下 free 只是摘掉句柄，内存由 arena 统一回收
     cb_map_free(&m);
     printf("free 摘掉 arena 句柄 slots==NULL/arena==NULL = %d/%d\n", (int)(m.slots == NULL),
            (int)(m.arena == NULL));
@@ -259,7 +246,6 @@ static void test_map_u64(void)
     bool del_zero = cb_map_u64_del(&m, 0);
     printf("删除 key 0 -> %d，删后 has(0) -> %d\n", (int)del_zero, (int)cb_map_u64_has(&m, 0));
 
-    // 顺序整数键不应扎堆：容量应接近条目数
     CB_Map_U64 seq = CB_ZERO;
     for (uint64_t i = 0; i < 1000; ++i) cb_map_u64_put(&seq, i, (void*)(intptr_t)i);
     printf("顺序键插入 1000 条后 count = %zu\n", seq.count);

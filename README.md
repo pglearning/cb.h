@@ -1,134 +1,96 @@
 # cb.h
 
-一个 header-only 的 C 库：既是**构建工具**（用 C 写构建脚本，不需要任何构建系统），
-也是**个人标准库**（日常项目里反复要用的容器、字符串、文件系统、进程工具）。
+单文件、零依赖的 **C99** 库：既是**构建工具**（用 C 写构建脚本，不需要 Make / CMake / shell），
+也是一套日常够用的工具箱（容器、字符串、UTF-8、文件系统、路径、进程与管道、命令行解析、日志、计时）。
 
-单文件、零依赖、C11。`#include "cb.h"` 之后所有功能立即可用，**不需要 `#define CB_IMPLEMENTATION`**。
+原型与设计参考：[tsoding/nob.h](https://github.com/tsoding/nob.h)。
 
-Prototype & author: https://github.com/tsoding/nob.h
+## 用法：stb 风格单头文件
 
-```console
-$ cc -o cb cb.c && ./cb test
-```
-
-## 快速上手
-
-当作构建脚本用：
+**恰好一个 `.c`** 定义 `CB_IMPLEMENTATION` 之后再 include，其余 `.c` 只 include。
+单文件程序可以额外 `#define CBDEF static inline`，让编译器丢掉没用到的函数。
 
 ```c
-// build.c
+// build.c —— 就是那个"恰好一个 .c"
+#define CB_IMPLEMENTATION
+#define CB_ENABLE_ECHO                 // 打印实际执行的命令与文件操作（默认静默）
 #include "cb.h"
 
 int main(int argc, char** argv)
 {
-    CB_SELF_REBUILD_PLUS(argc, argv, "cb.h");   // 改了这个脚本会自动重编自己
+    CB_SELF_REBUILD(argc, argv, "cb.h");   // 改了 cb.h 或本文件就自动重建自己
+
+    if (!cb_mkdir_if_not_exists("./bin")) return 1;
 
     CB_Cmd cmd = CB_ZERO;
-    cb_cmd_append(&cmd, "cc", "-Wall", "-Wextra", "-o", "app", "main.c");
-    if (!cb_cmd_run(&cmd)) return 1;
-    return 0;
+    cb_cc(&cmd);                           // 编译器
+    cb_cc_flags(&cmd);                     // 平台/语言对应的告警与标准旗标
+    cb_cc_output(&cmd, "./bin/app");
+    cb_cc_inputs(&cmd, "./src/main.c");
+    return cb_cmd_run(&cmd, .dont_reset = false) ? 0 : 1;
 }
 ```
 
 ```console
-$ cc -o build build.c
-$ ./build
+$ cc -std=c99 -D_POSIX_C_SOURCE=200112L -I. build.c -o ./build_script
+$ ./build_script               # 产出 ./bin/app
 ```
 
-当作普通库用：直接 `#include "cb.h"` 调用任意接口即可。
+严格 `-std=c99` 时需要 `-D_POSIX_C_SOURCE=200112L`（否则 `lstat` / `readlink` /
+`clock_gettime` / `PATH_MAX` 不可见）；用编译器默认方言或 `-std=gnu99` 则不需要。
+macOS 与 FreeBSD 不传这个宏，原因写在 cb.h 的 **Build Flags** 一节。
 
-## 能力概览
+两个容易踩的点：
 
-`cb.h` 顶部有一份按文件顺序排列的 30 节目录，常用几块：
+- 输出名不要叫 `build`：项目里通常同时有 `build/` 目录，`cc -o build` 会报
+  `cannot open output file build: 是一个目录`。
+- `cb_cmd_run(cmd, ...)` 与 `CB_SELF_REBUILD(argc, argv, ...)` 的 `...` 在严格 C99 下
+  **至少要有一个实参**（C99 变参宏的硬性要求），所以要么写 `.dont_reset = false` 这类
+  选项，要么像 `CB_SELF_REBUILD(argc, argv, "cb.h")` 那样至少列一个文件。
 
-- **Arena / Temp Storage** — 分块增长的作用域分配器；`cb_temp_*` 是它的线程局部实例
-- **Dynamic Array / Bitset / Ring Buffer / Sort / HashMap** — 容器与算法
-- **StringView / StringBuilder / StringView Tools / UTF-8 Support** — 字符串与 utf8
-- **File System / 路径处理 / File System 扩展** — 目录遍历、原子写、符号链接、glob、mmap
-- **Process & FD / Cmd / Cmd Chain** — 起进程、重定向、并发限流、管道串联
-- **Math & Bits / Time & Date / Random / Runtime Environment / Hex Dump / CLI Args** — 日常小工具
+## 测试：`cb.c` 就是 cb.h 自己的测试器
 
-编译期开关（`CB_STRIP_PREFIX`、`CB_SHARED_STATE`、`CB_OOM`、`CB_ALLOC_TRACK` 等）与
-使用约束都写在 `cb.h` 头部，用之前扫一眼即可。
+与 nob.c 同一套流程：编译每个测试到 `build/tests/<名字>`，在独立沙箱目录里运行，
+把 stdout 与 `tests/<名字>.stdout.txt` 逐字节比对。
 
-## 文档
+```console
+$ cc -I. cb.c -o cb        # 首次 clone 后没有 cb 二进制，先构建一次
+$ ./cb test                # 之后改了 cb.c 或 cb.h，它会先自举重建再跑
+$ ./cb test arena map      # 只跑指定测试
+$ ./cb record arena        # 重录 golden（tests/arena.stdout.txt）
+$ ./cb list                # 列出测试
+$ ./cb help                # 列出命令
+```
 
-| 文档 | 内容 |
-|---|---|
-| **[docs/guide.md](docs/guide.md)** | 分模块使用指南：每节讲"怎么用"，含大量可抄的代码片段 |
-| **[docs/api.md](docs/api.md)** | API 速查表：346 个公共接口（201 函数 + 105 宏 + 40 类型），按分节列出 |
-| **[docs/api-coverage.md](docs/api-coverage.md)** | 覆盖对照表：每个接口在哪个示例/测试里被真正用到（当前无使用者的接口数 = 0） |
-| **[examples/](examples/)** | 14 个可直接编译运行的示例，覆盖全部功能 |
-| **[bench/](bench/)** | 性能基准，覆盖 8 个模块 |
+15 个测试覆盖 arena / temp、动态数组 / 位图 / 环形缓冲 / 哈希表、字符串与 UTF-8、
+文件系统与路径、命令与管道（含 chain）、构建 API、CLI 参数等。
+Windows 分支用 `tools/verify-windows.sh`（mingw-w64 交叉编译 + wine 实际运行）验证，
+内存与未定义行为用 `tools/verify-sanitizers.sh`（ASan + UBSan + LSan），
+C++ 模式（clang++ / g++ × c++17 / c++20）用 `tools/verify-cxx-tests.sh`。
 
 ## 示例
 
-```console
-$ ./cb examples      # 编译并运行全部 14 个示例
-```
+`examples/` 下 11 个可独立编译运行的程序：多项目构建脚本、单目标构建、两阶段生成、
+构建 API 全选项、容器、字符串、文件系统、内存、日志、工具箱、编译开关总览。
+清单与构建命令见 [`examples/README.md`](examples/README.md)。
 
-**构建类**（cb.h 的主用途）：
+## 编译开关
 
-| 示例 | 内容 |
-|---|---|
-| [`01_hello.c`](examples/01_hello.c) | 最小可用：include + 日志 |
-| [`02_single_project.c`](examples/02_single_project.c) | **单项目构建**：编译一个真实源文件再运行它，就是 `cb.c` 里 `build_and_run` 的骨架 |
-| [`03_multi_project.c`](examples/03_multi_project.c) | **多项目构建**：项目表驱动多个目标，源文件 / 产物名 / 运行参数都在表里 |
-| [`04_two_stage.c`](examples/04_two_stage.c) | **两阶段构建**：先生成 `config.h` 再按配置构建，改配置重跑即生效 |
-| [`05_build_api.c`](examples/05_build_api.c) | **构建 API 全量**：Cmd / FD / Pipe / Proc / Procs / Chain 的每个函数与选项 |
+全部开关（行为开关、容量微调、`CB_OOM(size)` 等）与默认值列在 cb.h 开头的 **NOTE** 里，
+都在 `#include "cb.h"` 之前定义才生效，每个都有 `#ifndef` 守卫。
 
-**标准库类**：`06_containers`（容器与算法）、`07_strings`（字符串）、`08_utf8`、
-`09_paths`（路径与 glob）、`10_filesystem`、`11_memory`、`12_logging`、`13_toolbox`。
+## 目录
 
-**编译期开关**：[`14_config_switches`](examples/14_config_switches.c) —— `CB_STRIP_PREFIX`
-（去前缀别名，以及 11 个刻意不生成别名的名字）与 `CB_OOM`（把分配失败从 abort 换成自己的处理器）。
+| 路径 | 说明 |
+| --- | --- |
+| `cb.h` | 库本体：声明区在 `CB_H_` 内，定义区在 `#ifdef CB_IMPLEMENTATION` 内，别名区在文件末尾 |
+| `cb.c` | cb.h 自己的测试器（nob.c 式：`test` / `record` / `list` / `help`） |
+| `tests/` | 15 个测试与它们的 golden 输出（`*.win32.stdout.txt` 是平台差异覆盖） |
+| `examples/` | 11 个示例程序 |
+| `tools/` | 三条验证脚本（windows-cross / sanitizers / cxx-tests） |
+| `_ref/nob.h` | 参照用的 nob.h 原型 |
+| `_backup/` | 重写前的初版与备份 |
 
-02/03 构建的是仓库里真实存在的源文件，04 会先生成 `config.h`；产物都放在
-`build/examples/<名字>/` 下，它们的 `main` 与 `cb.c` 是同一个骨架。详见 [examples/README.md](examples/README.md)。
+## 许可
 
-## 构建与测试
-
-```console
-$ cc -o cb cb.c
-$ ./cb              # 不带参数 = 跑 test
-$ ./cb test         # 正确性测试（先做 clang++/g++ 兼容性检查，再逐个与 golden 比对）
-$ ./cb examples     # 编译并运行全部示例，输出默认可见
-$ ./cb bench        # 性能基准（./cb bench containers 只跑一组）
-$ ./cb docs         # 重新生成 docs/api.md 与 docs/api-coverage.md
-$ ./cb docs --check # 校验文档是否最新、有没有"没人用的公共接口"
-$ ./cb record       # 重新录制 golden
-$ ./cb clean        # 删除 build/
-$ ./cb list         # 列出测试
-$ ./cb help         # 或 -h / --help
-```
-
-输出默认全打，没有 `-v` 这类开关：
-
-```console
-$ ./cb test
-[INFO] ---- ./build/./tests/bytes_for_utf8 finished ----
-[INFO] ---- ./build/./tests/read_entire_dir finished ----
-...
-[INFO] 15/15 test(s) passed
-```
-
-15 个测试全部是 **golden 输出比对**：测试只把实际观察到的值 `printf` 出来，
-`./cb test` 拿它和 `tests/<名字>.stdout.txt` 比对。失败时给出最多 10 行差异、
-两个 golden 的路径，以及保留下来的沙箱目录（成功时沙箱会删掉）。
-
-`docs/api.md` 与 `docs/api-coverage.md` 由脚本从 `cb.h` 生成，不要手改。
-
-## 平台支持
-
-| 平台 | 状态 |
-|---|---|
-| Linux + clang / gcc | ✅ C（gnu11 / gnu17 / gnu23 / c11）× C++（c++17 / c++20 / c++23），0 错误 0 警告 |
-| ASan + UBSan + LSan | ✅ 15 个测试与 14 个示例全部干净 |
-| Windows（mingw-w64 + wine） | ✅ 交叉编译 0 警告，15 个测试全部通过 |
-| macOS / FreeBSD / Haiku / MSVC | ⚠️ 保留了条件编译分支，未实测 |
-
-```console
-$ tools/verify-sanitizers.sh            # 全部测试在 ASan+UBSan+LSan 下跑（--examples 连示例一起扫）
-$ tools/verify-windows.sh               # mingw-w64 交叉编译 + wine 实跑，逐字节比对 golden
-$ tools/verify-cxx-tests.sh             # clang++/g++ × c++17/c++20 构建 cb 并跑全部测试（要求 0 告警）
-```
+见 [LICENSE.md](LICENSE.md)。

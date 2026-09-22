@@ -4,7 +4,6 @@
 int main(void)
 {
 
-    // create test files
     const char* path_dir = "dir";
     const char* path_dir2 = "dir/dir2";
     if (!cb_mkdir_if_not_exists(path_dir)) {
@@ -21,6 +20,8 @@ int main(void)
     FILE* file1 = fopen(path_file1, "wb");
     FILE* file2 = fopen(path_file2, "wb");
     if (file1 == NULL || file2 == NULL) {
+        if (file1 != NULL) fclose(file1);
+        if (file2 != NULL) fclose(file2);
         cb_log(CB_ERROR, "file create failed");
         return -1;
     }
@@ -38,11 +39,11 @@ int main(void)
         printf("output_paths[%zu] = %s\n", i, output_paths.items[i]);
     }
 
-    // clear test files
     cb_delete_file(path_file1);
     cb_delete_file(path_file2);
     cb_delete_file(path_dir2);
     cb_delete_file(path_dir);
+    free(output_paths.items);
 
     return 0;
 }

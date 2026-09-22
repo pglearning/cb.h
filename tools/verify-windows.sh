@@ -31,7 +31,7 @@ cd "$(dirname "$0")/.."
 
 CC=${CC:-x86_64-w64-mingw32-gcc}
 CXX=${CXX:-x86_64-w64-mingw32-g++}
-CFLAGS=${CFLAGS:-"-std=gnu11 -Wall -Wextra -Wswitch-enum"}
+CFLAGS=${CFLAGS:-"-std=c99 -Wall -Wextra -Wswitch-enum"}
 BUILD_DIR=${BUILD_DIR:-$(mktemp -d)}
 EXPORT_PREFIX=${WINEPREFIX:-$(mktemp -d)}
 

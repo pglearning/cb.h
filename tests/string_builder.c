@@ -1,13 +1,10 @@
-// String_Builder 实测：追加 / 对齐 / 自引用 / 读文件往返
-//
-// 风格：纯 printf + golden 比对，只打实际观察到的值。
 #include "test_diagnostics.h"
 #include "cb.h"
 
 int main(void)
 {
     CB_String_Builder sb1 = {0};
-    // 自己造文件来读：不依赖工作目录布局，同时验证"写进去 -> 读回来"的内容往返。
+
     {
         const char* content = "round-trip content\n";
         size_t content_len = strlen(content);
@@ -28,21 +25,16 @@ int main(void)
 
     cb_sb_append_buf(&sb, sb.items, sb.count);
 
-    // 追加一个 String_View
     cb_sb_append_sv(&sb, CB_SVLIT("+sv"));
 
     cb_sb_append_cstr(&sb, "sb.items");
 
     cb_sb_append(&sb, ' ');
-    
 
-    // 必须在 free 之前打印：cb_sb_free 之后 items 已经失效
     printf("|" CB_SV_FMT "|\n", CB_SV_ARG(cb_sb_to_sv(sb)));
 
-    // ---------------------------------------------------------------- 读文件
-    // 读回来的 items 必须能当合法 C 字符串用（结尾有 '\0'）
     {
-        const char* content = "0123456789"; // 10 字节，正好把容量用满
+        const char* content = "0123456789";
         cb_write_entire_file("sb_read_back.txt", content, strlen(content));
 
         CB_String_Builder rb = CB_ZERO;
@@ -51,7 +43,7 @@ int main(void)
         printf("count = %zu, strlen = %zu\n", rb.count, rb.items ? strlen(rb.items) : 0);
         printf("结尾有 '\\0' = %d\n", (int)(rb.items && rb.items[rb.count] == '\0'));
         printf("strstr 能找到 \"567\" = %d\n", (int)(strstr(rb.items, "567") != NULL));
-        // 空文件也要能安全地当 C 字符串用（items 至少有 1 字节）
+
         cb_sb_free(rb);
 
         CB_String_Builder eb = CB_ZERO;

@@ -26,7 +26,7 @@
 #      且编译这 15 个测试时 0 告警；
 #   3. 再用 clang++ / g++ 直接把这批 tests/*.c 编成 C++：要求 0 告警。
 #      `./cb test` 用的 cc 在多数机器上是 gcc，clang 专有的告警只有这样才抓得到；
-#   4. 同样扫一遍 examples/ 与 bench/（C++ 模式下 `./cb examples` 也是用 C++ 编的）。
+#   4. 同样扫一遍 examples/。
 
 set -uo pipefail
 
@@ -123,7 +123,7 @@ echo "== 直接把源文件按 C++ 编译一遍（0 告警）=="
 for spec in "${SWEEP_SPECS[@]}"; do
     count=0
     bad=0
-    for src in tests/*.c examples/*.c bench/bench.c; do
+    for src in tests/*.c examples/*.c; do
         [ -f "$src" ] || continue
         count=$((count + 1))
         # shellcheck disable=SC2086

@@ -52,7 +52,7 @@ export ASAN_OPTIONS="detect_leaks=1:abort_on_error=0:strict_string_checks=1"
 export UBSAN_OPTIONS="print_stacktrace=1:halt_on_error=0"
 
 # --examples：示例的覆盖面比测试宽（每个示例专门演示一个模块），值得单独扫一遍。
-# 与 ./cb examples 一致：示例在**仓库根目录**下运行，它们自己负责清理产生的文件。
+# 示例在仓库根目录下运行，它们自己负责清理产生的文件。
 if [ "${1:-}" = "--examples" ]; then
     shift
     failed=0
@@ -62,7 +62,7 @@ if [ "${1:-}" = "--examples" ]; then
         [ "$name" = "11_memory" ] && extra+=(-DCB_ALLOC_TRACK)
         [ "$name" = "12_logging" ] && extra+=(-rdynamic)
 
-        if ! $CC -std=gnu11 -g -O1 -fsanitize="$SAN" -fno-omit-frame-pointer -I. \
+        if ! $CC -std=c99 -D_POSIX_C_SOURCE=200112L -g -O1 -fsanitize="$SAN" -fno-omit-frame-pointer -I. \
                  "${extra[@]}" -o "$BUILD_DIR/$name" "$src"; then
             echo "   FAIL $name（编译失败）"
             failed=$((failed + 1))
@@ -96,7 +96,7 @@ for name in "${TESTS[@]}"; do
     [ -f "$src" ] || { echo "   ?? 找不到 $src"; failed=$((failed + 1)); continue; }
 
     # -g 为了能定位到 cb.h 的行号；-O1 保留一点真实代码形态又便于定位
-    if ! $CC -std=gnu11 -g -O1 -fsanitize="$SAN" -fno-omit-frame-pointer -I. \
+    if ! $CC -std=c99 -D_POSIX_C_SOURCE=200112L -g -O1 -fsanitize="$SAN" -fno-omit-frame-pointer -I. \
              -o "$BUILD_DIR/$name" "$src"; then
         echo "   FAIL $name（编译失败）"
         failed=$((failed + 1))
