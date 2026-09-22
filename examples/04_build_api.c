@@ -64,6 +64,7 @@ int main(void)
     if (!cb_chain_cmd(&chain, &cmd)) return 1;
     if (!cb_chain_end(&chain)) return 1;
     free(chain.cmd.items);
+    free(cmd.items);
 
     return 0;
 }

@@ -5415,6 +5415,9 @@ defer:
 //   Linux    -std=c99 needs -D_POSIX_C_SOURCE=200112L, otherwise lstat/readlink/clock_gettime/
 //            nanosleep/PATH_MAX stay undeclared.
 //   MSVC     C and C++ modes take different switches (/TC vs /TP, /std:c++20) and no -I. form.
+//   C++      the language flag is not part of cb_cc(): -x c++ sticks to every later input, so a
+//            linked .o/.a/.so would be parsed as C++ source. cb_cc_inputs() attaches it to the
+//            sources alone, and appends -x none to reset it.
 #ifndef cb_cc
 #if defined(_WIN32) && defined(_MSC_VER)
 #define cb_cc(cmd) cb_cmd_append(cmd, "cl.exe")
@@ -5422,8 +5425,6 @@ defer:
 #define cb_cc(cmd) cb_cmd_append(cmd, "clang")
 #elif defined(_WIN32) && defined(__TINYC__)
 #define cb_cc(cmd) cb_cmd_append(cmd, "tcc")
-#elif defined(__cplusplus)
-#define cb_cc(cmd) cb_cmd_append(cmd, "cc", "-x", "c++")
 #else
 #define cb_cc(cmd) cb_cmd_append(cmd, "cc")
 #endif
@@ -5458,7 +5459,13 @@ defer:
 #endif /* cb_cc_output */
 
 #ifndef cb_cc_inputs
+#if defined(__cplusplus) && !defined(_MSC_VER)
+// -x c++ applies to the sources listed here and -x none resets it, so link inputs appended later
+// (a .so/.a/.o) keep being treated as link inputs instead of C++ sources.
+#define cb_cc_inputs(cmd, ...) cb_cmd_append(cmd, "-x", "c++", __VA_ARGS__, "-x", "none")
+#else
 #define cb_cc_inputs(cmd, ...) cb_cmd_append(cmd, __VA_ARGS__)
+#endif
 #endif /* cb_cc_inputs */
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////

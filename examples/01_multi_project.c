@@ -91,12 +91,15 @@ bool build_project(const Project* project)
     for (size_t i = 0; project->include_dirs != NULL && project->include_dirs[i] != NULL; ++i) {
         cb_cmd_append(&cmd, cb_temp_sprintf("-I%s%s", OUT_FOLDER, project->include_dirs[i]));
     }
-    for (size_t i = 0; project->link_inputs != NULL && project->link_inputs[i] != NULL; ++i) {
-        cb_cmd_append(&cmd, cb_temp_sprintf("%s%s", BIN_FOLDER, project->link_inputs[i]));
-    }
     cb_cc_output(&cmd, bin_path);
     for (size_t i = 0; i < sources.count; ++i) {
         cb_cc_inputs(&cmd, sources.items[i]);
+    }
+    // Libraries come after the sources. Ubuntu's gcc/clang pass --as-needed by default, and a library
+    // listed before the objects that need it is dropped at that point, so the link fails with
+    // undefined references ("-lfoo after the .c files" is the portable order on every platform).
+    for (size_t i = 0; project->link_inputs != NULL && project->link_inputs[i] != NULL; ++i) {
+        cb_cmd_append(&cmd, cb_temp_sprintf("%s%s", BIN_FOLDER, project->link_inputs[i]));
     }
     if (!cb_cmd_run(&cmd)) cb_return_defer(false);
 

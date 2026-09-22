@@ -38,6 +38,7 @@ int main(void)
         cb_cc_output(&cmd, BIN_PATH);
         cb_cc_inputs(&cmd, SRC_PATH);
         if (!cb_cmd_run(&cmd)) return 1;
+        free(cmd.items);
     } else {
         cb_log(CB_INFO, "%s is up to date", BIN_PATH);
     }

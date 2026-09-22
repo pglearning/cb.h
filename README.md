@@ -40,10 +40,15 @@ $ ./build_script               # 产出 ./bin/app
 `clock_gettime` / `PATH_MAX` 不可见）；用编译器默认方言或 `-std=gnu99` 则不需要。
 macOS 与 FreeBSD 不传这个宏，原因写在 cb.h 的 **Build Flags** 一节。
 
-两个容易踩的点：
+三个容易踩的点：
 
 - 输出名不要叫 `build`：项目里通常同时有 `build/` 目录，`cc -o build` 会报
   `cannot open output file build: 是一个目录`。
+- **链接库要排在源码之后**：`cb_cc_inputs()` 放 `.c`，`.so` / `.a` / `-lfoo` 用
+  `cb_cmd_append()` 追加在它们**后面**。Ubuntu 的 gcc/clang 默认带 `--as-needed`，
+  库若排在源码前面，链接器处理到它时还没有任何未定义符号，会直接把它丢掉，然后在源码处
+  报 `undefined reference`；本地编译器默认不带 `--as-needed`，于是本地能过、CI 挂
+  （`examples/01_multi_project.c` 就是这么踩的）。
 - `cb_cmd_run(cmd, ...)` 与 `CB_SELF_REBUILD(argc, argv, ...)` 的 `...` 在严格 C99 下
   **至少要有一个实参**（C99 变参宏的硬性要求），所以要么写 `.dont_reset = false` 这类
   选项，要么像 `CB_SELF_REBUILD(argc, argv, "cb.h")` 那样至少列一个文件。
@@ -65,8 +70,10 @@ $ ./cb help                # 列出命令
 15 个测试覆盖 arena / temp、动态数组 / 位图 / 环形缓冲 / 哈希表、字符串与 UTF-8、
 文件系统与路径、命令与管道（含 chain）、构建 API、CLI 参数等。
 Windows 分支用 `tools/verify-windows.sh`（mingw-w64 交叉编译 + wine 实际运行）验证，
-内存与未定义行为用 `tools/verify-sanitizers.sh`（ASan + UBSan + LSan），
-C++ 模式（clang++ / g++ × c++17 / c++20）用 `tools/verify-cxx-tests.sh`。
+内存与未定义行为用 `tools/verify-sanitizers.sh`（ASan + UBSan + LSan，加 `--examples`
+连示例一起查），C++ 模式（clang++ / g++ × c++17 / c++20）用 `tools/verify-cxx-tests.sh`，
+示例本身用 `tools/verify-examples.sh`（11 个示例 × 两遍：默认链接、
+以及给 `cc` 垫上 `-Wl,--as-needed` 复现 Ubuntu 的默认行为；`CC=` 与 `CB_LANG=c++` 可切编译器与语言）。
 
 ## 示例
 

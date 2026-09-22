@@ -58,12 +58,9 @@ if [ "${1:-}" = "--examples" ]; then
     failed=0
     for src in examples/*.c; do
         name=$(basename "$src" .c)
-        extra=()
-        [ "$name" = "11_memory" ] && extra+=(-DCB_ALLOC_TRACK)
-        [ "$name" = "12_logging" ] && extra+=(-rdynamic)
 
         if ! $CC -std=c99 -D_POSIX_C_SOURCE=200112L -g -O1 -fsanitize="$SAN" -fno-omit-frame-pointer -I. \
-                 "${extra[@]}" -o "$BUILD_DIR/$name" "$src"; then
+                 -o "$BUILD_DIR/$name" "$src"; then
             echo "   FAIL $name（编译失败）"
             failed=$((failed + 1))
             continue
