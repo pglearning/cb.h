@@ -83,7 +83,7 @@ C++ 模式（clang++ / g++ × c++17 / c++20）用 `tools/verify-cxx-tests.sh`。
 
 | 路径 | 说明 |
 | --- | --- |
-| `cb.h` | 库本体：声明区在 `CB_H_` 内，定义区在 `#ifdef CB_IMPLEMENTATION` 内，别名区在文件末尾 |
+| `cb.h` | 库本体：每一节都是「声明 + 紧跟自己的 `#ifdef CB_IMPLEMENTATION` 定义块」，别名区在文件末尾 |
 | `cb.c` | cb.h 自己的测试器（nob.c 式：`test` / `record` / `list` / `help`） |
 | `tests/` | 15 个测试与它们的 golden 输出（`*.win32.stdout.txt` 是平台差异覆盖） |
 | `examples/` | 11 个示例程序 |

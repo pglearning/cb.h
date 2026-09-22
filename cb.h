@@ -2,8 +2,9 @@
 //  NOTE:
 //      - stb-style single header: define CB_IMPLEMENTATION in exactly one .c before including
 //        cb.h; every other .c just includes it and sees the declarations.
-//      - Layout: config macros -> platform headers -> general macros -> types -> declarations
-//        (inside the CB_H_ guard) -> definitions (behind CB_IMPLEMENTATION), same section order.
+//      - Layout: config macros -> platform headers -> general macros -> types, then the sections.
+//        Every section holds its declarations followed by its own #ifdef CB_IMPLEMENTATION block,
+//        so a section may only use what the sections above it declare.
 //      - Baseline: C99 and C++11. cb.h defines no feature-test macro, exactly like nob.h: build
 //        with the compiler default dialect or with -std=gnu99, and pass -D_POSIX_C_SOURCE=200112L
 //        yourself when you compile with strict -std=c99 (otherwise lstat/readlink/clock_gettime/
@@ -54,8 +55,6 @@
 
 #ifndef CB_H_
 #define CB_H_
-
-
 #ifdef _WIN32
 // Must come before any other header, otherwise MSVC/mingw warn about fopen/strcpy and friends.
 #ifndef _CRT_SECURE_NO_WARNINGS
@@ -419,1280 +418,11 @@ extern size_t cb__alloc_peak_size;
 extern size_t cb__alloc_total_count;
 #endif // CB_ALLOC_TRACK
 
-// temp is one thread-local arena instance, defined once in the implementation region
+// temp is one thread-local arena instance, defined once in this section's implementation block
 extern CB_THREAD_LOCAL CB_Arena cb__temp_arena;
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-// Logger / Panic
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-
-// Two ways to log:
-//     cb_log(level, ...)     library-internal and general use: no location, clean output
-//     CB_LOG_AT(level, ...)  your own code: adds file:line automatically
-// CB_LOG_AT(CB_ERROR, "bad config") -> [ERROR] mycode.c:42: bad config
-
-typedef enum {
-    CB_INFO,
-    CB_WARN,
-    CB_ERROR,
-    CB_NO_LOGS,
-} CB_Log_Level;
-
-// Log handler. file == NULL (line == 0) means "no location"; the handler decides what to print.
-typedef void(CB_Log_Handler)(CB_Log_Level level, const char* file, int line, const char* fmt, va_list args);
-
-extern CB_Log_Level cb_minimal_log_level;
-
-CBDEF CB_Log_Handler cb_default_log_handler;
-CBDEF CB_Log_Handler cb_cancer_log_handler;
-CBDEF CB_Log_Handler cb_null_log_handler;
-extern CB_Log_Handler* cb_log_handler;
-
-CBDEF void cb_log(CB_Log_Level level, const char* fmt, ...);
-// Log with a location; normally use the CB_LOG_AT macro instead of writing file/line by hand.
-CBDEF void cb_log_at(CB_Log_Level level, const char* file, int line, const char* fmt, ...);
-#define CB_LOG_AT(level, ...) cb_log_at((level), __FILE__, __LINE__, __VA_ARGS__)
-
-CBDEF void cb_set_log_handler(CB_Log_Handler* handler);
-CBDEF CB_Log_Handler* cb_get_log_handler(void);
-CBDEF void cb_default_log_handler(CB_Log_Level level, const char* file, int line, const char* fmt, va_list args);
-CBDEF void cb_cancer_log_handler(CB_Log_Level level, const char* file, int line, const char* fmt, va_list args);
-CBDEF void cb_null_log_handler(CB_Log_Level level, const char* file, int line, const char* fmt, va_list args);
-
-// panic: print file:line + label + message, then abort. On glibc/Mac/FreeBSD a backtrace is
-// printed as well (function names need -rdynamic, otherwise feed the addresses to addr2line);
-// CB_PANIC_BACKTRACE=0 disables it. FreeBSD additionally needs -lexecinfo.
-#ifndef CB_PANIC_BACKTRACE
-#if (defined(__GLIBC__) || defined(__APPLE__) || defined(__FreeBSD__)) && !defined(_WIN32)
-#define CB_PANIC_BACKTRACE 1
-#else
-#define CB_PANIC_BACKTRACE 0
-#endif
-#endif // !CB_PANIC_BACKTRACE
-
-#if CB_PANIC_BACKTRACE
-#include <execinfo.h>
-#endif
-
-CBDEF void cb__panicf(const char* file, int line, const char* label, const char* format, ...);
-#define CB_TODO(...) cb__panicf(__FILE__, __LINE__, "TODO", __VA_ARGS__)
-#define CB_UNREACHABLE(...) cb__panicf(__FILE__, __LINE__, "UNREACHABLE", __VA_ARGS__)
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-// Timer
-////////////////////////////////////////////////////////////////////////////////////////////////////
-// Usage:
-//     CB_TIMER_START("phase");  ...work...  double us = CB_TIMER_END();
-//     cb_timer_end_print();   print this one measurement
-//     cb_timer_end_stat();    add it to the stat entry with the same name
-//     cb_timer_print_stats(); print the whole table
-//
-// Time source: QueryPerformanceCounter on Windows, clock_gettime(CLOCK_MONOTONIC) elsewhere.
-// The stats table grows on demand, so more timer names never lose data.
-// Everything goes to stderr: timing is diagnostics and would pollute stdout and recorded
-// test baselines.
-
-// Nanoseconds per second, for turning clock ticks into a duration.
-#define CB_NANOS_PER_SEC 1000000000ull
-
-// Nesting depth limit. This is not a limit on stat entries: the table grows on demand.
-#ifndef CB_TIMER_MAX_DEPTH
-#define CB_TIMER_MAX_DEPTH 64
-#endif // !CB_TIMER_MAX_DEPTH
-
-typedef struct {
-    const char* name;
-    double total;
-    size_t count;
-    double min;
-    double max;
-} CB_Timer_Stat;
-
-typedef struct {
-    const char* name;
-    double start;
-} CB_Timer_Frame;
-
-typedef struct {
-    CB_Timer_Stat* stats; // dynamic array (items/count/capacity)
-    size_t stats_count;
-    size_t stats_capacity;
-    CB_Timer_Frame stack[CB_TIMER_MAX_DEPTH];
-    size_t sp;
-} CB_Timer;
-
-extern CB_Timer cb_timer;
-
-// ---- declarations ----
-CBDEF double cb_get_time_ms(void);
-CBDEF double cb_get_time_us(void);
-// Nanoseconds from a monotonic clock; only differences between two stamps are meaningful.
-CBDEF uint64_t cb_nanos_since_unspecified_epoch(void);
-
-CBDEF void cb_timer_begin(const char* name);
-// End the current measurement and return the elapsed microseconds.
-CBDEF double cb_timer_end(void);
-// End the current measurement and add it to the stat entry with the same name.
-CBDEF double cb_timer_end_stat(void);
-// End the current measurement and print this one entry to stderr.
-CBDEF void cb_timer_end_print(void);
-// Find or create the stat entry with this name; never returns NULL.
-CBDEF CB_Timer_Stat* cb_timer_get_stat(const char* name);
-// Print the table to a stream (benchmarks use stdout so it can be redirected).
-CBDEF void cb_timer_fprint_stats(FILE* out);
-// Print the table to stderr (the default: timing is diagnostics).
-CBDEF void cb_timer_print_stats(void);
-// Clear stats and the timer stack, keeping the allocated table for reuse.
-CBDEF void cb_timer_reset(void);
-
-// Only these two keep short macro names; everything else uses the function directly.
-#define CB_TIMER_START(timer_name) cb_timer_begin(timer_name)
-#define CB_TIMER_END() cb_timer_end()
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-// Dynamic Array
-////////////////////////////////////////////////////////////////////////////////////////////////////
-typedef struct {
-    const char** items;
-    size_t count;
-    size_t capacity;
-} CB_DArray;
-
-#ifndef CB_DA_INIT_CAP
-#define CB_DA_INIT_CAP 256
-#endif // !CB_DA_INIT_CAP
-
-#define cb_da_free(da) CB_FREE((da).items)
-
-#define cb_da_reserve(da, new_capacity)                                                                                 \
-    do {                                                                                                                \
-        if ((new_capacity) > (da)->capacity) {                                                                          \
-            if ((da)->capacity == 0)                                                                                    \
-                (da)->capacity = CB_DA_INIT_CAP;                                                                        \
-            while ((new_capacity) > (da)->capacity) {                                                                   \
-                (da)->capacity *= 2;                                                                                    \
-            }                                                                                                           \
-            (da)->items = CB_DECLTYPE_CAST((da)->items) CB_REALLOC((da)->items, (da)->capacity * sizeof(*(da)->items)); \
-            cb_alloc_check((da)->items, (da)->capacity * sizeof(*(da)->items));                                        \
-        }                                                                                                               \
-    } while (0)
-
-#define cb_da_append(da, data)                \
-    do {                                      \
-        cb_da_reserve((da), (da)->count + 1); \
-        (da)->items[(da)->count++] = (data);  \
-    } while (0)
-
-
-#define cb_da_append_many(da, new_items, new_items_count)                                                \
-    do {                                                                                                 \
-        size_t cb__n = (size_t)(new_items_count);                                                        \
-        /* n == 0 allows new_items to be NULL, so skip the whole append (memcpy from NULL is UB)    */   \
-        if (cb__n > 0) {                                                                                 \
-            const char* cb__src = (const char*)(new_items);                                              \
-            /* Self-append: the source sits inside the target buffer, realloc invalidates it and the  */ \
-            /* ranges overlap, so remember the offset and then use memmove                            */ \
-            bool cb__self = (da)->items != NULL &&                                                       \
-                            cb__src >= (const char*)(da)->items &&                                       \
-                            cb__src < (const char*)(da)->items + (da)->count * sizeof(*(da)->items);     \
-            size_t cb__off = cb__self ? (size_t)(cb__src - (const char*)(da)->items) : 0;                \
-            cb_da_reserve((da), (da)->count + cb__n);                                                    \
-            if (cb__self) cb__src = (const char*)(da)->items + cb__off;                                  \
-            memmove((da)->items + (da)->count, cb__src, cb__n * sizeof(*(da)->items));                   \
-            (da)->count += cb__n;                                                                        \
-        }                                                                                                \
-    } while (0)
-
-#define cb_da_resize(da, new_size)     \
-    do {                               \
-        cb_da_reserve((da), new_size); \
-        (da)->count = (new_size);      \
-    } while (0)
-
-#define cb_da_pop(da) (da)->items[(CB_ASSERT((da)->count > 0), --(da)->count)]
-#define cb_da_first(da) (da)->items[(CB_ASSERT((da)->count > 0), 0)]
-#define cb_da_last(da) (da)->items[(CB_ASSERT((da)->count > 0), (da)->count - 1)]
-// Overwrite the removed element with the last one (order is not preserved).
-#define cb_da_remove_unordered(da, i)                \
-    do {                                             \
-        size_t j = (i);                              \
-        CB_ASSERT(j < (da)->count);                  \
-        (da)->items[j] = (da)->items[--(da)->count]; \
-    } while (0)
-
-#define cb_da_foreach(Type, it, da) \
-    for (Type* it = (da)->items; it < (da)->items + (da)->count; ++it)
-
-// Drop the contents but keep the allocated memory for reuse.
-#define cb_da_clear(da) ((da)->count = 0)
-
-// Insert one element at index, shifting the tail right.
-#define cb_da_insert(da, index, data)                                      \
-    do {                                                                   \
-        size_t cb__i = (index);                                            \
-        CB_ASSERT(cb__i <= (da)->count);                                    \
-        cb_da_reserve((da), (da)->count + 1);                               \
-        memmove((da)->items + cb__i + 1, (da)->items + cb__i,               \
-                ((da)->count - cb__i) * sizeof(*(da)->items));               \
-        (da)->items[cb__i] = (data);                                        \
-        (da)->count += 1;                                                   \
-    } while (0)
-
-// Remove in order, keeping the relative order of the rest. Use cb_da_remove_unordered when\n// the elements are large and their order does not matter.
-#define cb_da_remove_ordered(da, index)                                    \
-    do {                                                                   \
-        size_t cb__i = (index);                                            \
-        CB_ASSERT(cb__i < (da)->count);                                     \
-        memmove((da)->items + cb__i, (da)->items + cb__i + 1,               \
-                ((da)->count - cb__i - 1) * sizeof(*(da)->items));           \
-        (da)->count -= 1;                                                   \
-    } while (0)
-
-// Iterate backwards; with count == 0 it starts at items, so no items-1 pointer arithmetic.
-#define cb_da_foreach_rev(Type, it, da)                                    \
-    for (Type* it = ((da)->count > 0 ? (da)->items + (da)->count - 1 : (da)->items); \
-         (da)->count > 0 && it >= (da)->items; --it)
-
-// Append to a fixed-capacity inline array ({ T items[N]; size_t count; }): no allocation, no
-// growth, and a full array is a bug rather than something to silently drop an item over.
-#define cb_fa_append(fa, item) \
-    (CB_ASSERT((fa)->count < CB_ARRAY_LEN((fa)->items)), (fa)->items[(fa)->count++] = (item))
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-// Bitset
-////////////////////////////////////////////////////////////////////////////////////////////////////
-// Fixed-size bit set: bits is the number of bits, the storage is uint64_t words and grows on demand.
-
-typedef struct {
-    uint64_t* words;
-    size_t word_count;
-    size_t word_capacity;
-    size_t bits;
-} CB_Bitset;
-
-#ifndef CB_BITSET_WORD_BITS
-#define CB_BITSET_WORD_BITS 64
-#endif // !CB_BITSET_WORD_BITS
-
-// ---- declarations ----
-// Resize to bits: new bits read as 0, bits above the new size are dropped.
-CBDEF void cb_bitset_resize(CB_Bitset* bs, size_t bits);
-CBDEF void cb_bitset_set(CB_Bitset* bs, size_t index);
-CBDEF void cb_bitset_unset(CB_Bitset* bs, size_t index);
-CBDEF void cb_bitset_toggle(CB_Bitset* bs, size_t index);
-CBDEF bool cb_bitset_test(const CB_Bitset* bs, size_t index);
-// Clear every bit, keeping the allocated words.
-CBDEF void cb_bitset_clear_all(CB_Bitset* bs);
-// Count the bits whose value equals target.
-CBDEF size_t cb_bitset_count(const CB_Bitset* bs, bool target);
-// Index of the first bit equal to target, or (size_t)-1 when there is none.
-CBDEF size_t cb_bitset_find(const CB_Bitset* bs, bool target);
-CBDEF void cb_bitset_free(CB_Bitset* bs);
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-// Ring Buffer
-////////////////////////////////////////////////////////////////////////////////////////////////////
-// Byte ring buffer, FIFO. The capacity is fixed and never grows: a full ring accepts what fits\n// and returns the number of bytes actually written.
-
-typedef struct {
-    unsigned char* data;
-    size_t capacity;
-    size_t read_pos;
-    size_t write_pos;
-    size_t count; // bytes currently readable
-} CB_Ring;
-
-// ---- declarations ----
-CBDEF bool cb_ring_init(CB_Ring* ring, size_t capacity);
-CBDEF void cb_ring_free(CB_Ring* ring);
-// How many bytes can still be written.
-CBDEF size_t cb_ring_space(const CB_Ring* ring);
-// Write and return the number of bytes actually written.
-CBDEF size_t cb_ring_write(CB_Ring* ring, const void* data, size_t size);
-// Read and return the number of bytes actually read.
-CBDEF size_t cb_ring_read(CB_Ring* ring, void* out, size_t size);
-// Copy without consuming and return the number of bytes copied.
-CBDEF size_t cb_ring_peek(const CB_Ring* ring, void* out, size_t size);
-// Drop all data without freeing the buffer.
-CBDEF void cb_ring_clear(CB_Ring* ring);
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-// Sort
-////////////////////////////////////////////////////////////////////////////////////////////////////
-// Works on any {items,count,capacity} dynamic array.
-// cb_da_sort uses qsort: fast, but not stable (equal elements may be reordered).
-// cb_da_sort_insertion is stable and very fast on nearly sorted arrays; best for small ones.
-
-typedef int (*CB_Compare_Func)(const void* a, const void* b);
-
-// ---- declarations ----
-// Stable insertion sort. It takes the element size so it can move elements byte-wise.
-CBDEF void cb__insertion_sort(void* items, size_t count, size_t elem_size, CB_Compare_Func cmp);
-
-#define cb_da_sort(da, cmp) qsort((da)->items, (da)->count, sizeof(*(da)->items), (cmp))
-#define cb_da_sort_insertion(da, cmp) \
-    cb__insertion_sort((da)->items, (da)->count, sizeof(*(da)->items), (cmp))
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-// StringBuilder
-////////////////////////////////////////////////////////////////////////////////////////////////////
-typedef struct {
-    char* items;
-    size_t count;
-    size_t capacity;
-} CB_String_Builder;
-
-// Core invariant: items is always a valid C string. Every append writes '\0' at items[count] and
-// the capacity counts that terminator (count does not), so cb_sb_to_sv / printf("%s") / strstr stay
-// safe at any moment. To put a '\0' inside the payload use cb_sb_append(&sb, '\0') explicitly:
-// that byte is content, not the terminator.
-CBDEF void cb__sb_terminate(CB_String_Builder* sb);
-
-// TODO: may need to add a buffer version, more safe for memory.
-CBDEF bool cb_read_entire_file(const char* path, CB_String_Builder* sb);
-CBDEF int cb_sb_appendf(CB_String_Builder* sb, const char* fmt, ...) CB_PRINTF_FORMAT(2, 3);
-// Pad the builder with 0 bytes up to a multiple of word_size (when building binary formats):
-// content "aaaaa" aligned to 4 becomes "aaaaa000".
-CBDEF void cb_sb_pad_align(CB_String_Builder* sb, size_t size);
-
-// Append a fixed-size buffer.
-#define cb_sb_append_buf(sb, buf, size)         \
-    do {                                        \
-        cb_da_append_many((sb), (buf), (size)); \
-        cb__sb_terminate(sb);                   \
-    } while (0)
-
-// Append a StringView.
-#define cb_sb_append_sv(sb, sv) cb_sb_append_buf((sb), (sv).data, (sv).count)
-
-// Append a NUL-terminated string.
-#define cb_sb_append_cstr(sb, cstr)                    \
-    do {                                               \
-        const char* cb__s = (cstr);                    \
-        cb_sb_append_buf((sb), cb__s, strlen(cb__s));  \
-    } while (0)
-
-// Append a single character.
-#define cb_sb_append(sb, ch)                 \
-    do {                                     \
-        char cb__ch = (char)(ch);            \
-        cb_sb_append_buf((sb), &cb__ch, 1);  \
-    } while (0)
-
-// Append a NUL byte to the payload (nob.h compatibility). cb.h keeps items NUL-terminated by
-// itself, so this is only needed when the NUL is part of the data, not to terminate a string.
-#define cb_sb_append_null(sb) cb_sb_append((sb), '\0')
-
-// Free the memory and zero the fields, so no dangling pointer is left behind.
-#define cb_sb_free(sb)          \
-    do {                        \
-        CB_FREE((sb).items);    \
-        (sb).items = NULL;      \
-        (sb).count = 0;         \
-        (sb).capacity = 0;      \
-    } while (0)
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-// StringView
-////////////////////////////////////////////////////////////////////////////////////////////////////
-typedef struct {
-    const char* data;
-    size_t count;
-} CB_String_View;
-
-// Macros for printing a StringView with printf.
-#ifndef CB_SV_FMT
-// Compile-time StringView literal: it saves the strlen that cb_sv_from_cstr("...") would do.
-// The designators must follow the declaration order of CB_String_View (data first, count second):
-// C allows any order, C++ is a hard error ("designator order for field does not match...").
-#define CB_SVLIT(lit) (CB_CLIT(CB_String_View){.data = (lit), .count = sizeof(lit) - 1})
-// Static-initializer form, for MSVC /TC which rejects the compound literal above.
-#define CB_SVLIT_STATIC(lit) {.data = (lit), .count = sizeof(lit) - 1}
-
-#define CB_SV_FMT "%.*s"
-#endif // CB_SV_FMT
-#ifndef CB_SV_ARG
-#define CB_SV_ARG(sv) (int)(sv).count, (sv).data
-#endif // CB_SV_ARG
-// USAGE:
-//   CB_String_View name = ...;
-//   printf("Name: "CB_SV_FMT"\n", CB_SV_ARG(name));
-
-// Copy the StringView into temp storage as a NUL-terminated C string.
-CBDEF const char* cb_sv_to_temp_cstr(CB_String_View sv);
-
-CBDEF bool cb_sv_eq(CB_String_View a, CB_String_View b);
-
-CBDEF CB_String_View cb_sv_from_parts(const char* data, size_t count);
-CBDEF CB_String_View cb_sv_from_cstr(const char* cstr);
-
-// View a StringBuilder as a StringView.
-#define cb_sb_to_sv(sb) cb_sv_from_parts((sb).items, (sb).count)
-
-// Chop while p(current character) is true: return the chopped prefix, move sv forward.
-//     CB_String_View sv = cb_sv_from_cstr("  123abc456");
-//     cb_sv_chop_by_func(&sv, isspace) -> "  ", sv = "123abc456"
-//     cb_sv_chop_by_func(&sv, isdigit) -> "123", sv = "abc456"
-// Move the view forward. An empty view may have data == NULL, and NULL + 0 is UB in C
-// (UBSan: "applying zero offset to null pointer"), so n == 0 returns early.
-#define cb__sv_advance(sv, n)  \
-    do {                       \
-        if ((n) > 0) {         \
-            (sv)->data += (n); \
-            (sv)->count -= (n);\
-        }                      \
-    } while (0)
-
-CBDEF CB_String_View cb_sv_chop_by_func(CB_String_View* sv, int (*p)(int x));
-// Chop up to delim, return that part and drop the delimiter itself.
-//     CB_String_View sv = cb_sv_from_cstr("  1223abc456");
-//     cb_sv_chop_by_delim(&sv, '2') -> "  1", sv = "23abc456"
-CBDEF CB_String_View cb_sv_chop_by_delim(CB_String_View* sv, char delim);
-CBDEF CB_String_View cb_sv_chop_by_delim_r(CB_String_View* sv, char delim);
-CBDEF CB_String_View cb_sv_chop_left(CB_String_View* sv, size_t n);
-CBDEF CB_String_View cb_sv_chop_right(CB_String_View* sv, size_t n);
-
-// True when the view has this prefix/suffix, false otherwise.
-CBDEF bool cb_sv_ends_with(CB_String_View sv, CB_String_View suffix);
-CBDEF bool cb_sv_ends_with_cstr(CB_String_View sv, const char* suffix);
-CBDEF bool cb_sv_starts_with(CB_String_View sv, CB_String_View prefix);
-CBDEF bool cb_sv_starts_with_cstr(CB_String_View sv, const char* prefix);
-
-// Chop the prefix if present and return true, otherwise return false.
-CBDEF bool cb_sv_chop_prefix(CB_String_View* sv, CB_String_View prefix);
-// Chop the suffix if present and return true, otherwise return false.
-CBDEF bool cb_sv_chop_suffix(CB_String_View* sv, CB_String_View suffix);
-
-// Return a view without leading/trailing whitespace; the original view is not modified.
-CBDEF CB_String_View cb_sv_trim_left(CB_String_View sv);
-CBDEF CB_String_View cb_sv_trim_right(CB_String_View sv);
-CBDEF CB_String_View cb_sv_trim(CB_String_View sv);
-
-CBDEF int cb_sv_find(CB_String_View* sv, char ch);
-CBDEF int cb_sv_find_sv(CB_String_View* sv, CB_String_View target, size_t start_offset);
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-// UTF-8 Support
-////////////////////////////////////////////////////////////////////////////////////////////////////
-extern const uint8_t cb_bytes_for_utf8[];
-
-CBDEF size_t cb_sv_utf8_len(CB_String_View sv, size_t* bytes_overrun);
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-// StringView Tools
-////////////////////////////////////////////////////////////////////////////////////////////////////
-// ---- declarations ----
-// Case conversion; the result lives in temp storage.
-CBDEF char* cb_sv_to_temp_upper(CB_String_View sv);
-CBDEF char* cb_sv_to_temp_lower(CB_String_View sv);
-CBDEF bool cb_sv_eq_ignore_case(CB_String_View a, CB_String_View b);
-
-// Number parsing is strict and allows surrounding whitespace: on success it writes *out and returns
-// true, on failure it returns false and leaves *out untouched. 0x/0X hex, 0b/0B binary and 0o/0O
-// octal prefixes are accepted; integers take no decimal point and no exponent.
-CBDEF bool cb_sv_to_i64(CB_String_View sv, int64_t* out);
-CBDEF bool cb_sv_to_u64(CB_String_View sv, uint64_t* out);
-CBDEF bool cb_sv_to_f64(CB_String_View sv, double* out);
-
-// Take the next delim-separated field; sv is consumed in place.
-//     while (cb_sv_split_next(&sv, ',', &part)) { ... }
-CBDEF bool cb_sv_split_next(CB_String_View* sv, char delim, CB_String_View* out);
-// Append parts joined by sep to sb (no trailing separator).
-CBDEF void cb_sb_append_join(CB_String_Builder* sb, const CB_String_View* parts, size_t count, CB_String_View sep);
-
-// UTF-8: decode one code point.
-CBDEF bool cb_utf8_decode(const char* data, size_t size, uint32_t* out_codepoint, size_t* out_length);
-// Encode one code point into out (at least 4 bytes) and return the length; 0 when invalid.
-CBDEF size_t cb_utf8_encode(uint32_t codepoint, char out[4]);
-// Take one code point from the head of sv and move sv forward.
-CBDEF bool cb_sv_utf8_next(CB_String_View* sv, uint32_t* out_codepoint);
-// Validate the view as UTF-8; on failure out_bad_offset receives the offending index.
-CBDEF bool cb_utf8_validate(CB_String_View sv, size_t* out_bad_offset);
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-// HashMap
-////////////////////////////////////////////////////////////////////////////////////////////////////
-// Open addressing with linear probing. Keys are copied into the map, so the caller does not have
-//
-// Storage backends:
-//   - CB_REALLOC / CB_FREE by default
-//   - after cb_map_init_arena(&m, &arena, n) every allocation comes from the arena.
-//     The arena cannot free single blocks, so slot arrays abandoned by a rehash live until
-//
-// Usage:
-//   CB_Map m = CB_ZERO;
-//   cb_map_put_cstr(&m, "answer", (void*)(intptr_t)42);
-//   void* v = NULL;
-//   if (cb_map_get_cstr(&m, "answer", &v)) { ... }
-//   cb_map_foreach(&m, it) { printf("%.*s\n", (int)it.key.count, it.key.data); }
-//   cb_map_free(&m);
-
-#ifndef CB_MAP_INIT_CAPACITY
-#define CB_MAP_INIT_CAPACITY 16
-#endif // !CB_MAP_INIT_CAPACITY
-
-#define CB_MAP_EMPTY 0
-#define CB_MAP_USED 1
-#define CB_MAP_TOMBSTONE 2
-
-typedef struct {
-    CB_String_View key; // key.data points at the copy owned by the map
-    void* value;
-    uint64_t hash; // cached hash, so a rehash does not recompute it
-    uint8_t state;
-} CB_Map_Slot;
-
-typedef struct {
-    CB_Map_Slot* slots;
-    size_t capacity; // slot count, always a power of two; 0 means nothing allocated yet
-    size_t count;    // live entries
-    size_t tombstones;
-    CB_Arena* arena; // when non-NULL every allocation comes from the arena
-} CB_Map;
-
-typedef struct {
-    CB_Map* map;
-    size_t index;
-    CB_String_View key; // current entry, filled in by cb_map_next
-    void* value;
-} CB_Map_Iter;
-
-// ---- hashing ----
-CBDEF uint64_t cb_hash_bytes(const void* data, size_t size);
-CBDEF uint64_t cb_hash_u64(uint64_t value);
-
-// ---- declarations ----
-CBDEF void cb_map_init_capacity(CB_Map* map, size_t capacity);
-// Arena backend: every allocation comes from the arena, which must outlive the map.
-CBDEF void cb_map_init_arena(CB_Map* map, CB_Arena* arena, size_t capacity);
-// Insert or overwrite (the key is copied). A NULL value is allowed.
-CBDEF void cb_map_put(CB_Map* map, CB_String_View key, void* value);
-CBDEF void cb_map_put_cstr(CB_Map* map, const char* key, void* value);
-// A miss returns false and leaves *out untouched; out may be NULL to only test presence.
-CBDEF bool cb_map_get(const CB_Map* map, CB_String_View key, void** out);
-CBDEF bool cb_map_get_cstr(const CB_Map* map, const char* key, void** out);
-CBDEF bool cb_map_has(const CB_Map* map, CB_String_View key);
-CBDEF bool cb_map_del(CB_Map* map, CB_String_View key);
-CBDEF size_t cb_map_count(const CB_Map* map);
-// Drop the entries but keep the allocated capacity.
-CBDEF void cb_map_clear(CB_Map* map);
-CBDEF void cb_map_free(CB_Map* map);
-CBDEF CB_Map_Iter cb_map_iter(CB_Map* map);
-CBDEF bool cb_map_next(CB_Map_Iter* it);
-#define cb_map_foreach(map, it) \
-    for (CB_Map_Iter it = cb_map_iter(map); cb_map_next(&it);)
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-// HashMap (uint64 keys)
-////////////////////////////////////////////////////////////////////////////////////////////////////
-// Same open-addressing implementation as CB_Map, with integer keys and a cheaper hash/comparison.
-// Keys need no separate allocation, so this version is leaner than the string-key one.
-
-typedef struct {
-    uint64_t key;
-    void* value;
-    uint64_t hash;
-    uint8_t state;
-} CB_Map_U64_Slot;
-
-typedef struct {
-    CB_Map_U64_Slot* slots;
-    size_t capacity;
-    size_t count;
-    size_t tombstones;
-    CB_Arena* arena;
-} CB_Map_U64;
-
-typedef struct {
-    CB_Map_U64* map;
-    size_t index;
-    uint64_t key;
-    void* value;
-} CB_Map_U64_Iter;
-
-// ---- declarations ----
-CBDEF void cb_map_u64_init_capacity(CB_Map_U64* map, size_t capacity);
-CBDEF void cb_map_u64_init_arena(CB_Map_U64* map, CB_Arena* arena, size_t capacity);
-CBDEF void cb_map_u64_put(CB_Map_U64* map, uint64_t key, void* value);
-CBDEF bool cb_map_u64_get(const CB_Map_U64* map, uint64_t key, void** out);
-CBDEF bool cb_map_u64_has(const CB_Map_U64* map, uint64_t key);
-CBDEF bool cb_map_u64_del(CB_Map_U64* map, uint64_t key);
-CBDEF size_t cb_map_u64_count(const CB_Map_U64* map);
-CBDEF void cb_map_u64_clear(CB_Map_U64* map);
-CBDEF void cb_map_u64_free(CB_Map_U64* map);
-CBDEF CB_Map_U64_Iter cb_map_u64_iter(CB_Map_U64* map);
-CBDEF bool cb_map_u64_next(CB_Map_U64_Iter* it);
-#define cb_map_u64_foreach(map, it) \
-    for (CB_Map_U64_Iter it = cb_map_u64_iter(map); cb_map_u64_next(&it);)
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-// File System
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-// PATH_MAX is optional in POSIX, so provide a fallback before anyone uses it.
-#ifndef CB_PATH_MAX
-#ifdef PATH_MAX
-#define CB_PATH_MAX PATH_MAX
-#else
-#define CB_PATH_MAX 4096
-#endif /* PATH_MAX */
-#endif /* !CB_PATH_MAX */
-#ifdef _WIN32
-// Based on https://stackoverflow.com/a/75644008 (.NET uses a 4096 * sizeof(WCHAR) stack buffer).
-#ifndef CB_WIN32_ERR_MSG_SIZE
-#define CB_WIN32_ERR_MSG_SIZE (4 * 1024)
-#endif // CB_WIN32_ERR_MSG_SIZE
-
-CBDEF char* cb_win32_error_message(DWORD err);
-#endif // _WIN32
-
-CBDEF const char* cb_path_name(const char* path);
-CBDEF bool cb_rename(const char* old_path, const char* new_path);
-CBDEF int cb_file_exists(const char* file_path);
-CBDEF const char* cb_get_current_dir_temp(void);
-CBDEF bool cb_set_current_dir(const char* path);
-
-CBDEF char* cb_temp_dir_name(const char* path);
-CBDEF char* cb_temp_file_name(const char* path);
-CBDEF char* cb_temp_file_ext(const char* path);
-CBDEF char* cb_temp_running_executable_path(void);
-
-// File types are split only five ways: error / regular file / directory / symlink / other.
-// Finer kinds (FIFO, socket, device, junction) are not implemented.
-
-typedef enum {
-    CB_FILE_ERROR = -1,
-    CB_FILE_REGULAR = 0,
-    CB_FILE_DIRECTORY,
-    CB_FILE_SYMLINK,
-    CB_FILE_OTHER,
-} CB_File_Type;
-
-typedef enum {
-    CB_WALK_CONT,
-    CB_WALK_SKIP,
-    CB_WALK_STOP,
-} CB_Walk_Action;
-
-typedef struct {
-    const char* path;
-    CB_File_Type type;
-    size_t level;
-    void* data;
-    CB_Walk_Action* action;
-} CB_Walk_Entry;
-
-typedef bool (*CB_Walk_Func)(CB_Walk_Entry entry);
-
-// Only the fields you care about are needed: cb_walk_dir(root, fn, .post_order = true) / (.data = &x);
-// the rest fall back to the defaults from CB__DEFAULT (see the General section).
-// The struct must be tagged: in C++ an "anonymous struct with default member initializers"
-// is reported by -Wnon-c-typedef-for-linkage.
-typedef struct CB_Walk_Dir_Opt {
-    void* data CB__DEFAULT(nullptr);
-    bool post_order CB__DEFAULT(false);
-} CB_Walk_Dir_Opt;
-
-CBDEF bool cb_delete_walk_entry(CB_Walk_Entry entry);
-CBDEF bool cb__walk_dir_opt_impl(CB_String_Builder* file_path, CB_Walk_Func func, size_t level, bool* stop, CB_Walk_Dir_Opt opt);
-CBDEF bool cb_walk_dir_opt(const char* root, CB_Walk_Func func, CB_Walk_Dir_Opt opt);
-#define cb_walk_dir(root, func, ...) cb_walk_dir_opt((root), (func), CB_CLIT(CB_Walk_Dir_Opt){__VA_ARGS__})
-
-typedef struct {
-    char* name;
-    bool error;
-
-    struct {
-#ifdef _WIN32
-        WIN32_FIND_DATA win32_data;
-        HANDLE win32_hFind;
-        bool win32_init;
-#else
-        DIR* posix_dir;
-        struct dirent* posix_ent;
-#endif // _WIN32
-    } cb__private;
-} CB_Dir_Entry;
-
-// Open a directory for iteration. Returns false on failure (cb_log prints the error).
-CBDEF bool cb_dir_entry_open(const char* dir_path, CB_Dir_Entry* dir);
-// Fetch the next entry. false means the end or an error (dir->error is set in that case).
-CBDEF bool cb_dir_entry_next(CB_Dir_Entry* dir);
-CBDEF void cb_dir_entry_close(CB_Dir_Entry dir);
-
-typedef struct {
-    const char** items;
-    size_t count;
-    size_t capacity;
-} CB_File_Paths;
-
-
-// Recursive mkdir (mkdir -p): intermediate levels are created, an existing directory is fine.
-CBDEF bool cb_mkdir_if_not_exists(const char* path);
-CBDEF bool cb_copy_file(const char* src_path, const char* dst_path);
-CBDEF bool cb_copy_directory_recursively(const char* src_path, const char* dst_path);
-CBDEF bool cb_delete_directory_recursively(const char* dir_path);
-// List a directory's entry names (without "." and ".."); the memory is temp storage.
-CBDEF bool cb_read_entire_dir(const char* parent, CB_File_Paths* children);
-CBDEF bool cb_write_entire_file(const char* path, const void* data, size_t size);
-CBDEF CB_File_Type cb_get_file_type(const char* path);
-CBDEF bool cb_delete_file(const char* path);
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-// Path
-////////////////////////////////////////////////////////////////////////////////////////////////////
-// Results are allocated in temp storage. These functions only manipulate strings and never
-// touch the file system (cb_path_absolute is the exception: it reads the current directory).
-
-// ---- declarations ----
-// Absolute path? POSIX: starts with '/'; Windows: starts with '/' or '\\', or looks like C:/
-CBDEF bool cb_path_is_absolute(const char* path);
-// Path separator predicate ('\\' on Windows, '/' elsewhere).
-CBDEF bool cb_path_is_sep(char c);
-// Join two path parts, handling separators (no doubled separator is produced).
-// When b is absolute, a is ignored and b is returned (same convention as os.path.join).
-CBDEF char* cb_path_join(const char* a, const char* b);
-// Collapse doubled separators and resolve "." and "..". No symlinks, no file system access.
-// Relative paths stay relative; a ".." at the root is dropped ("/.." -> "/").
-CBDEF char* cb_path_normalize(const char* path);
-// Turn a relative path into an absolute one (current directory + normalize).
-CBDEF char* cb_path_absolute(const char* path);
-// Replace the extension. new_ext may or may not start with a dot; NULL or "" removes it.
-// Only the part after the last dot of the last path component is touched.
-CBDEF char* cb_path_replace_ext(const char* path, const char* new_ext);
-
-#ifdef _WIN32
-#define CB_PATH_SEP '\\'
-#else
-#define CB_PATH_SEP '/'
-#endif // _WIN32
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-// File System Extras
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-#ifdef _WIN32
-#define CB_PROCESS_ID() ((unsigned long)GetCurrentProcessId())
-#else
-#define CB_PROCESS_ID() ((unsigned long)getpid())
-#endif // _WIN32
-
-// ---- declarations ----
-// File size in bytes; (size_t)-1 on failure. A directory's size is platform dependent.
-CBDEF size_t cb_file_size(const char* path);
-// Last modification time (Unix seconds); -1 on failure.
-CBDEF int64_t cb_file_mtime(const char* path);
-
-// Atomic write: write a temp file next to the target, then rename over it.
-// rename is atomic within one file system, so the target is never seen half written.
-CBDEF bool cb_write_entire_file_atomic(const char* path, const void* data, size_t size);
-
-// Create a symlink. On Windows this needs developer mode or administrator rights.
-CBDEF bool cb_create_symlink(const char* target, const char* link_path);
-// Read a symlink target (allocated in temp storage); NULL on failure.
-CBDEF char* cb_read_symlink(const char* path);
-
-// Wildcard match: * any run, ? one character, [abc] / [a-z] / [!abc] character classes.
-CBDEF bool cb_glob_match(const char* pattern, const char* text);
-// List the entries of dir matching pattern (one level only, no recursion).
-// out receives full "dir/name" paths; the memory is temp storage.
-CBDEF bool cb_glob(const char* dir, const char* pattern, CB_File_Paths* out);
-
-// Read-only memory mapping, for zero-copy reads of large files.
-typedef struct {
-    void* data;
-    size_t size;
-#ifdef _WIN32
-    HANDLE file_handle;
-    HANDLE mapping_handle;
-#else
-    int fd;
-#endif // _WIN32
-} CB_Mmap;
-
-CBDEF bool cb_mmap_open(const char* path, CB_Mmap* out);
-CBDEF void cb_mmap_close(CB_Mmap* mmap);
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-// Math & Bits
-////////////////////////////////////////////////////////////////////////////////////////////////////
-// cb_min / cb_max / cb_clamp. On GCC/Clang every argument is evaluated exactly once and keeps its
-// own type; on other compilers the plain macro fallback evaluates an argument twice, so do not pass
-// something like i++ to it. C++ uses templates and has no such restriction.
-
-#ifdef __cplusplus
-
-template <typename T>
-struct cb__remove_ref {
-    typedef T type;
-};
-template <typename T>
-struct cb__remove_ref<T&> {
-    typedef T type;
-};
-
-// References are stripped for the C++ version: `a < b ? a : b` yields an lvalue, so decltype
-// would give T& and the function would return a dangling reference to a local copy.
-#define CB__MINMAX_RET(expr) typename cb__remove_ref<decltype(expr)>::type
-
-template <typename T, typename U>
-constexpr auto cb_min(T a, U b) -> CB__MINMAX_RET(a < b ? a : b)
-{
-    return a < b ? a : b;
-}
-
-template <typename T, typename U>
-constexpr auto cb_max(T a, U b) -> CB__MINMAX_RET(a > b ? a : b)
-{
-    return a > b ? a : b;
-}
-
-template <typename T, typename U, typename V>
-constexpr auto cb_clamp(T x, U lo, V hi) -> CB__MINMAX_RET(cb_min(cb_max(x, lo), hi))
-{
-    return cb_min(cb_max(x, lo), hi);
-}
-
-#else // !__cplusplus
-
-#if defined(__GNUC__) || defined(__clang__)
-// Single evaluation: each argument is read exactly once and keeps its own type, so
-// cb_min(2, 1.9) is 1.9 rather than a truncated 1.
-#define cb_min(a, b) \
-    __extension__({ __typeof__(a) cb__a = (a); __typeof__(b) cb__b = (b); cb__a < cb__b ? cb__a : cb__b; })
-#define cb_max(a, b) \
-    __extension__({ __typeof__(a) cb__a = (a); __typeof__(b) cb__b = (b); cb__a > cb__b ? cb__a : cb__b; })
-#define cb_clamp(x, lo, hi) \
-    __extension__({ __typeof__(x) cb__x = (x); __typeof__(lo) cb__lo = (lo); __typeof__(hi) cb__hi = (hi); \
-                    cb__x < cb__lo ? cb__lo : (cb__x > cb__hi ? cb__hi : cb__x); })
-#else
-// Portable fallback: each argument is evaluated twice, so avoid side effects in the arguments.
-#define cb_min(a, b) ((a) < (b) ? (a) : (b))
-#define cb_max(a, b) ((a) > (b) ? (a) : (b))
-#define cb_clamp(x, lo, hi) ((x) < (lo) ? (lo) : ((x) > (hi) ? (hi) : (x)))
-#endif
-
-
-#endif // __cplusplus
-
-// Round value up/down to a multiple of alignment (a power of two):
-//     cb_align_up(13, 8) -> 16        cb_align_down(13, 8) -> 8
-#define cb_align_up(value, alignment) (((value) + (alignment) - 1) & ~((alignment) - 1))
-#define cb_align_down(value, alignment) ((value) & ~((alignment) - 1))
-
-// ---- declarations ----
-CBDEF bool cb_is_pow2(uint64_t value);
-// Round up to the next power of two: 0 and 1 give 1, overflow gives 0.
-//     cb_next_pow2(100) -> 128
-CBDEF uint64_t cb_next_pow2(uint64_t value);
-// Number of set bits: cb_popcount64(0xFF00) -> 8.
-CBDEF int cb_popcount64(uint64_t value);
-// Trailing/leading zero count: cb_ctz64(8) -> 3, cb_clz64(1) -> 63; both give 64 for 0.
-CBDEF int cb_ctz64(uint64_t value);
-CBDEF int cb_clz64(uint64_t value);
-CBDEF uint64_t cb_rotl64(uint64_t value, int amount);
-CBDEF uint64_t cb_rotr64(uint64_t value, int amount);
-// Host byte order: cb_is_little_endian() -> true on x86 and ARM.
-CBDEF bool cb_is_little_endian(void);
-CBDEF uint32_t cb_bswap32(uint32_t value);
-CBDEF uint64_t cb_bswap64(uint64_t value);
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-// Time & Date
-////////////////////////////////////////////////////////////////////////////////////////////////////
-// ---- declarations ----
-// Current UTC time in Unix seconds: cb_time_now() -> 1758400000.
-CBDEF int64_t cb_time_now(void);
-// Unix seconds to an ISO 8601 UTC string in temp storage:
-//     cb_time_to_iso8601(1758400000) -> "2025-09-21T18:13:20Z"
-CBDEF char* cb_time_to_iso8601(int64_t unix_seconds);
-// Human-readable duration in temp storage: 0.42 -> "420ms", 12.5 -> "12.5s",
-// 185 -> "3m5s", 7325 -> "2h2m".
-CBDEF char* cb_duration_to_str(double seconds);
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-// Random
-////////////////////////////////////////////////////////////////////////////////////////////////////
-// xoshiro256** state. Better than rand() and identical on every platform, so a seed reproduces
-// a run exactly. Fine for simulation, sampling and shuffling, NOT for cryptography.
-//     CB_Rng rng; cb_rng_seed(&rng, 42); uint64_t x = cb_rng_next(&rng);
-
-typedef struct {
-    uint64_t state[4];
-} CB_Rng;
-
-// ---- declarations ----
-CBDEF void cb_rng_seed(CB_Rng* rng, uint64_t seed);
-CBDEF uint64_t cb_rng_next(CB_Rng* rng);
-// Uniform double in [0,1): cb_rng_double(&rng) -> 0.379...
-CBDEF double cb_rng_double(CB_Rng* rng);
-// Uniform integer in [0,bound): cb_rng_range(&rng, 10) -> 0..9; bound 0 returns 0.
-CBDEF uint64_t cb_rng_range(CB_Rng* rng, uint64_t bound);
-// Fisher-Yates shuffle in place: cb_rng_shuffle(&rng, xs, count, sizeof(xs[0]));
-CBDEF void cb_rng_shuffle(CB_Rng* rng, void* items, size_t count, size_t elem_size);
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-// Runtime Environment
-////////////////////////////////////////////////////////////////////////////////////////////////////
-// ---- declarations ----
-// Environment variable copied into temp storage, NULL when unset (like getenv):
-//     const char* home = cb_env_get("HOME");
-CBDEF char* cb_env_get(const char* name);
-CBDEF bool cb_env_set(const char* name, const char* value);
-// Is stdout a terminal? cb_stdout_is_tty() -> false when the output is redirected.
-CBDEF bool cb_stdout_is_tty(void);
-// Terminal width in columns, 80 when it cannot be determined.
-CBDEF int cb_terminal_width(void);
-// Are ANSI colors wanted? true when stdout is a tty, NO_COLOR is unset and colors were not
-// disabled explicitly.
-CBDEF bool cb_color_enabled(void);
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-// Hex Dump
-////////////////////////////////////////////////////////////////////////////////////////////////////
-CBDEF void cb_dump_hex(const void* data, size_t size);
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-// CLI Args
-////////////////////////////////////////////////////////////////////////////////////////////////////
-// Minimal argument parser. Accepted forms:
-//     --key=value   option with a value
-//     --key         switch (value is NULL)
-//     -k            switch, same as --k
-//     -k=value      option with a value
-//     --            everything after it is a positional argument
-//     anything else is a positional argument
-// "--key value" (space separated) is not supported: write --key=value.
-//     CB_Args args; cb_args_parse(&args, argc, argv);
-//     if (cb_args_has(&args, "verbose")) { ... }
-//     const char* out = cb_args_get(&args, "out", "a.bin");
-
-typedef struct {
-    const char* name;  // name without the leading - / --
-    const char* value; // NULL for a switch
-} CB_Arg_Entry;
-
-typedef struct {
-    CB_Arg_Entry* items;
-    size_t count;
-    size_t capacity;
-} CB_Arg_List;
-
-typedef struct {
-    CB_Arg_List options;
-    CB_File_Paths positionals;
-} CB_Args;
-
-// ---- declarations ----
-// Pass main's argc/argv; argv[0] is treated as the program name and skipped.
-CBDEF void cb_args_parse(CB_Args* args, int argc, char** argv);
-// Was this switch/option given?
-CBDEF bool cb_args_has(const CB_Args* args, const char* name);
-// Value of an option, or fallback when it is absent (the last occurrence wins).
-CBDEF const char* cb_args_get(const CB_Args* args, const char* name, const char* fallback);
-// cb_args_get_first() returns the first occurrence instead of the last one.
-CBDEF const char* cb_args_get_first(const CB_Args* args, const char* name);
-CBDEF size_t cb_args_positional_count(const CB_Args* args);
-CBDEF const char* cb_args_positional(const CB_Args* args, size_t index);
-CBDEF void cb_args_free(CB_Args* args);
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-// Process & FD
-////////////////////////////////////////////////////////////////////////////////////////////////////
-#ifdef _WIN32
-typedef HANDLE CB_Proc;
-#define CB_INVALID_PROC INVALID_HANDLE_VALUE
-typedef HANDLE CB_FD;
-#define CB_INVALID_FD INVALID_HANDLE_VALUE
-#else
-typedef int CB_Proc;
-#define CB_INVALID_PROC (-1)
-typedef int CB_FD;
-#define CB_INVALID_FD (-1)
-#endif // _WIN32
-
-CBDEF CB_FD cb_fd_open_read(const char* path);
-CBDEF CB_FD cb_fd_open_write(const char* path);
-CBDEF void cb_fd_close(CB_FD fd);
-
-typedef struct {
-    CB_FD read;
-    CB_FD write;
-} CB_Pipe;
-
-CBDEF bool cb_pipe_create(CB_Pipe* pp);
-
-typedef struct {
-    CB_Proc* items;
-    size_t count;
-    size_t capacity;
-} CB_Procs;
-
-CBDEF int cb__proc_wait_async(CB_Proc proc, int ms);
-// Wait for one child: cb_proc_wait(proc) -> true when it exited with status 0.
-CBDEF bool cb_proc_wait(CB_Proc proc);
-// Wait for every process of the array: cb_procs_wait(procs).
-CBDEF bool cb_procs_wait(CB_Procs procs);
-// Wait for all of them and reset the array for reuse: cb_procs_wait_and_reset(&procs).
-CBDEF bool cb_procs_wait_and_reset(CB_Procs* procs);
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-// Cmd
-////////////////////////////////////////////////////////////////////////////////////////////////////
-typedef struct {
-    const char** items;
-    size_t count;
-    size_t capacity;
-} CB_Cmd;
-
-// Options of cb_cmd_run_opt(); the cb_cmd_run(cmd, ...) macro fills them by name:
-//     cb_cmd_run(&cmd, .stdout_path = "out.txt", .async = &procs, .max_procs = 4);
-typedef struct CB_Cmd_Opt {
-    // run asynchronously, appending the CB_Proc to this array
-    CB_Procs* async CB__DEFAULT(nullptr);
-    // concurrency limit for .async; 0 means cb_nprocs()
-    size_t max_procs CB__DEFAULT(0);
-    // keep cmd.count after the run, so the same command can be run again
-    bool dont_reset CB__DEFAULT(false);
-    // redirect stdin from this file
-    const char* stdin_path CB__DEFAULT(nullptr);
-    // redirect stdout to this file
-    const char* stdout_path CB__DEFAULT(nullptr);
-    // redirect stderr to this file
-    const char* stderr_path CB__DEFAULT(nullptr);
-} CB_Cmd_Opt;
-
-CBDEF void cb__cmd_append(CB_Cmd* cmd, size_t n, const char** args);
-#ifdef __cplusplus
-template <typename... Args>
-#define cb_cmd_append(cmd, ...) cb__cpp_cmd_append_wrapper(cmd, __VA_ARGS__)
-CBDEF void cb__cpp_cmd_append_wrapper(CB_Cmd* cmd, Args... strs)
-{
-    const char* args[] = {strs...};
-    cb__cmd_append(cmd, sizeof(args) / sizeof(args[0]), args);
-}
-#else
-#define cb_cmd_append(cmd, ...) \
-    cb__cmd_append(cmd, sizeof((const char*[]){__VA_ARGS__}) / sizeof(const char*), (const char*[]){__VA_ARGS__})
-#endif // __cplusplus
-
-// Append every argument of another command: cb_cmd_extend(&cmd, &other);
-#define cb_cmd_extend(cmd, other_cmd) \
-    cb_da_append_many((cmd), (other_cmd)->items, (other_cmd)->count)
-// Free the argv storage and zero the handle: cb_cmd_free(cmd);
-#define cb_cmd_free(cmd) \
-    do {                     \
-        cb_da_free(cmd);     \
-        (cmd).items = NULL;  \
-        (cmd).count = 0;     \
-        (cmd).capacity = 0;  \
-    } while (0)
-
-CBDEF void cb_cmd_to_sb(CB_Cmd cmd, CB_String_Builder* sb);
-CBDEF int cb_nprocs(void);
-CBDEF CB_Proc cb__cmd_start_process(CB_Cmd cmd, CB_FD* fdin, CB_FD* fdout, CB_FD* fderr);
-CBDEF bool cb_cmd_run_opt(CB_Cmd* cmd, CB_Cmd_Opt opt);
-CBDEF bool cb__cmd_run_opt_with_location(CB_Cmd* cmd, const char* file, int line, CB_Cmd_Opt opt);
-#define cb_cmd_run(cmd, ...) cb__cmd_run_opt_with_location((cmd), __FILE__, __LINE__, CB_CLIT(CB_Cmd_Opt){__VA_ARGS__})
-
-typedef struct {
-    CB_FD fdin;
-    CB_Cmd cmd;
-    bool err2out;
-} CB_Pipes;
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-// Cmd Chain
-////////////////////////////////////////////////////////////////////////////////////////////////////
-// Pipeline of commands; the code below is equivalent to "foo | bar | baz > out.txt":
-//   CB_Chain chain = CB_ZERO;  CB_Cmd cmd = CB_ZERO;
-//   if (!cb_chain_begin(&chain)) return 1;
-//   cb_cmd_append(&cmd, "foo"); if (!cb_chain_cmd(&chain, &cmd)) return 1;
-//   cb_cmd_append(&cmd, "bar"); if (!cb_chain_cmd(&chain, &cmd)) return 1;
-//   cb_cmd_append(&cmd, "baz"); if (!cb_chain_cmd(&chain, &cmd)) return 1;
-//   if (!cb_chain_end(&chain, .stdout_path = "out.txt")) return 1;
-//
-// The only allocation inside CB_Chain is .cmd; free it with cb_da_free(chain.cmd) when reusing.
-
-typedef struct {
-    // output end of the previous command, used as the input of the next one
-    CB_FD fdin;
-    // command accumulated by the last cb_chain_cmd()
-    CB_Cmd cmd;
-    // .err2out of the last cb_chain_cmd()
-    bool err2out;
-} CB_Chain;
-
-typedef struct CB_Chain_Begin_Opt {
-    const char* stdin_path CB__DEFAULT(nullptr);
-} CB_Chain_Begin_Opt;
-
-typedef struct CB_Chain_Cmd_Opt {
-    bool err2out CB__DEFAULT(false);
-    bool dont_reset CB__DEFAULT(false);
-} CB_Chain_Cmd_Opt;
-
-typedef struct CB_Chain_End_Opt {
-    CB_Procs* async CB__DEFAULT(nullptr);
-    size_t max_procs CB__DEFAULT(0);
-    const char* stdout_path CB__DEFAULT(nullptr);
-    const char* stderr_path CB__DEFAULT(nullptr);
-} CB_Chain_End_Opt;
-
-// Remembers the fds to close at the end (a chain needs at most 3; 5 slots is plenty).
-typedef struct {
-    CB_FD items[5];
-    size_t count;
-} CB_Fd_List;
-
-// ---- declarations ----
-CBDEF bool cb_chain_begin_opt(CB_Chain* chain, CB_Chain_Begin_Opt opt);
-CBDEF bool cb_chain_cmd_opt(CB_Chain* chain, CB_Cmd* cmd, CB_Chain_Cmd_Opt opt);
-CBDEF bool cb_chain_end_opt(CB_Chain* chain, CB_Chain_End_Opt opt);
-
-#define cb_chain_begin(chain, ...) cb_chain_begin_opt((chain), CB_CLIT(CB_Chain_Begin_Opt){__VA_ARGS__})
-#define cb_chain_cmd(chain, cmd, ...) cb_chain_cmd_opt((chain), (cmd), CB_CLIT(CB_Chain_Cmd_Opt){__VA_ARGS__})
-#define cb_chain_end(chain, ...) cb_chain_end_opt((chain), CB_CLIT(CB_Chain_End_Opt){__VA_ARGS__})
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-// Build Flags
-////////////////////////////////////////////////////////////////////////////////////////////////////
-// Defaults for the compiler abstraction used by build scripts. Every macro has its own #ifndef
-// guard, so a project can override any of them before including cb.h:
-//     #define cb_cc_flags(cmd) cb_cmd_append(cmd, "-Wall", "-Wextra", "-O2")
-//     #include "cb.h"
-//
-// The platform split follows what actually compiles on each system:
-//   macOS    neither -std=c99 nor -D_POSIX_C_SOURCE is passed: both hide symbols we need.
-//   FreeBSD  -D_POSIX_C_SOURCE hides required symbols, -std=c99 is fine.
-//   Linux    -std=c99 needs -D_POSIX_C_SOURCE=200112L, otherwise lstat/readlink/clock_gettime/
-//            nanosleep/PATH_MAX stay undeclared.
-//   MSVC     C and C++ modes take different switches (/TC vs /TP, /std:c++20) and no -I. form.
-#ifndef cb_cc
-#if defined(_WIN32) && defined(_MSC_VER)
-#define cb_cc(cmd) cb_cmd_append(cmd, "cl.exe")
-#elif defined(_WIN32) && defined(__clang__)
-#define cb_cc(cmd) cb_cmd_append(cmd, "clang")
-#elif defined(_WIN32) && defined(__TINYC__)
-#define cb_cc(cmd) cb_cmd_append(cmd, "tcc")
-#elif defined(__cplusplus)
-#define cb_cc(cmd) cb_cmd_append(cmd, "cc", "-x", "c++")
-#else
-#define cb_cc(cmd) cb_cmd_append(cmd, "cc")
-#endif
-#endif /* cb_cc */
-
-#ifndef cb_cc_flags
-#if defined(__cplusplus)
-#if defined(_MSC_VER)
-#define cb_cc_flags(cmd) cb_cmd_append(cmd, "/std:c++20", "/TP", "/W4", "/nologo", "/D_CRT_SECURE_NO_WARNINGS", "-I.")
-#else
-#define cb_cc_flags(cmd) cb_cmd_append(cmd, "-Wall", "-Wextra", "-Wno-missing-field-initializers", "-Wswitch-enum", "-ggdb", "-I.")
-#endif
-#else // !__cplusplus
-#if defined(_MSC_VER)
-#define cb_cc_flags(cmd) cb_cmd_append(cmd, "/TC", "/W4", "/nologo", "/D_CRT_SECURE_NO_WARNINGS", "-I.")
-#elif defined(__APPLE__) || defined(__MACH__)
-#define cb_cc_flags(cmd) cb_cmd_append(cmd, "-Wall", "-Wextra", "-Wswitch-enum", "-I.")
-#elif defined(__FreeBSD__)
-#define cb_cc_flags(cmd) cb_cmd_append(cmd, "-Wall", "-Wextra", "-Wswitch-enum", "-std=c99", "-ggdb", "-I.")
-#else
-#define cb_cc_flags(cmd) cb_cmd_append(cmd, "-Wall", "-Wextra", "-Wswitch-enum", "-std=c99", "-D_POSIX_C_SOURCE=200112L", "-ggdb", "-I.")
-#endif
-#endif // __cplusplus
-#endif /* cb_cc_flags */
-
-#ifndef cb_cc_output
-#if defined(_MSC_VER) && !defined(__clang__)
-#define cb_cc_output(cmd, output_path) cb_cmd_append(cmd, cb_temp_sprintf("/Fe:%s", (output_path)), cb_temp_sprintf("/Fo:%s", (output_path)))
-#else
-#define cb_cc_output(cmd, output_path) cb_cmd_append(cmd, "-o", (output_path))
-#endif
-#endif /* cb_cc_output */
-
-#ifndef cb_cc_inputs
-#define cb_cc_inputs(cmd, ...) cb_cmd_append(cmd, __VA_ARGS__)
-#endif /* cb_cc_inputs */
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-// C Builder
-////////////////////////////////////////////////////////////////////////////////////////////////////
-#ifndef CB_REBUILD_URSELF
-#if defined(_WIN32)
-#if defined(__clang__)
-#if defined(__cplusplus)
-#define CB_REBUILD_URSELF(binary_path, source_path) "clang", "-x", "c++", "-o", binary_path, source_path
-#else
-#define CB_REBUILD_URSELF(binary_path, source_path) "clang", "-x", "c", "-o", binary_path, source_path
-#endif
-#elif defined(__GNUC__)
-#if defined(__cplusplus)
-#define CB_REBUILD_URSELF(binary_path, source_path) "gcc", "-x", "c++", "-o", binary_path, source_path
-#else
-#define CB_REBUILD_URSELF(binary_path, source_path) "gcc", "-x", "c", "-o", binary_path, source_path
-#endif
-#elif defined(_MSC_VER)
-#define CB_REBUILD_URSELF(binary_path, source_path) "cl.exe", cb_temp_sprintf("/Fe:%s", (binary_path)), source_path
-#elif defined(__TINYC__)
-#define CB_REBUILD_URSELF(binary_path, source_path) "tcc", "-o", binary_path, source_path
-#endif
-#else
-#if defined(__cplusplus)
-#define CB_REBUILD_URSELF(binary_path, source_path) "cc", "-x", "c++", "-o", binary_path, source_path
-#else
-#define CB_REBUILD_URSELF(binary_path, source_path) "cc", "-x", "c", "-o", binary_path, source_path
-#endif
-#endif
-#endif
-
-// Compiler command line used to rebuild this build script; redefine it to bootstrap differently.
-CBDEF int cb_needs_rebuild(const char* binary_path, const char** source_paths, size_t source_paths_count);
-CBDEF void cb__self_rebuild(int argc, char** argv, const char* source_path, ...);
-// Call once at the top of main(): rebuild this program and re-run it when the program itself or any
-// listed source file is newer than the binary. C99 needs at least one listed source path:
-//     CB_SELF_REBUILD(argc, argv, "cb.h");
-#define CB_SELF_REBUILD(argc, argv, ...) cb__self_rebuild(argc, argv, __FILE__, __VA_ARGS__, NULL)
-
-
-
-#endif /* CB_H_ */
 
 #ifdef CB_IMPLEMENTATION
 
-////////////////////////////////////////////////////////////////////////////////////////////////////
-// General
-////////////////////////////////////////////////////////////////////////////////////////////////////
-#ifdef __cplusplus
-#else
-#endif // __cplusplus
-#ifdef __cplusplus
-#else
-#endif // __cplusplus
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-// Allocator
-////////////////////////////////////////////////////////////////////////////////////////////////////
-#ifdef __cplusplus
-#else
-#endif // __cplusplus
-#if defined(__cplusplus)
-#else
-#endif
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-// Arena / Temp Storage
-////////////////////////////////////////////////////////////////////////////////////////////////////
-#ifndef CB_THREAD_LOCAL
-#ifdef __cplusplus
-#elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
-#elif defined(_MSC_VER)
-#elif defined(__GNUC__) || defined(__clang__)
-#else
-#endif
-#endif // !CB_THREAD_LOCAL
-
-// ---- definitions ----
 CBDEF void cb__oom(size_t requested_size, const char* file, int line)
 {
     fprintf(stderr, "%s:%d: OOM: could not allocate %zu bytes\n", file, line, requested_size);
@@ -1945,9 +675,65 @@ CBDEF char* cb_temp_sprintf(const char* fmt, ...)
     return result;
 }
 
+#endif // CB_IMPLEMENTATION
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // Logger / Panic
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+// Two ways to log:
+//     cb_log(level, ...)     library-internal and general use: no location, clean output
+//     CB_LOG_AT(level, ...)  your own code: adds file:line automatically
+// CB_LOG_AT(CB_ERROR, "bad config") -> [ERROR] mycode.c:42: bad config
+
+typedef enum {
+    CB_INFO,
+    CB_WARN,
+    CB_ERROR,
+    CB_NO_LOGS,
+} CB_Log_Level;
+
+// Log handler. file == NULL (line == 0) means "no location"; the handler decides what to print.
+typedef void(CB_Log_Handler)(CB_Log_Level level, const char* file, int line, const char* fmt, va_list args);
+
+extern CB_Log_Level cb_minimal_log_level;
+
+CBDEF CB_Log_Handler cb_default_log_handler;
+CBDEF CB_Log_Handler cb_cancer_log_handler;
+CBDEF CB_Log_Handler cb_null_log_handler;
+extern CB_Log_Handler* cb_log_handler;
+
+CBDEF void cb_log(CB_Log_Level level, const char* fmt, ...);
+// Log with a location; normally use the CB_LOG_AT macro instead of writing file/line by hand.
+CBDEF void cb_log_at(CB_Log_Level level, const char* file, int line, const char* fmt, ...);
+#define CB_LOG_AT(level, ...) cb_log_at((level), __FILE__, __LINE__, __VA_ARGS__)
+
+CBDEF void cb_set_log_handler(CB_Log_Handler* handler);
+CBDEF CB_Log_Handler* cb_get_log_handler(void);
+CBDEF void cb_default_log_handler(CB_Log_Level level, const char* file, int line, const char* fmt, va_list args);
+CBDEF void cb_cancer_log_handler(CB_Log_Level level, const char* file, int line, const char* fmt, va_list args);
+CBDEF void cb_null_log_handler(CB_Log_Level level, const char* file, int line, const char* fmt, va_list args);
+
+// panic: print file:line + label + message, then abort. On glibc/Mac/FreeBSD a backtrace is
+// printed as well (function names need -rdynamic, otherwise feed the addresses to addr2line);
+// CB_PANIC_BACKTRACE=0 disables it. FreeBSD additionally needs -lexecinfo.
+#ifndef CB_PANIC_BACKTRACE
+#if (defined(__GLIBC__) || defined(__APPLE__) || defined(__FreeBSD__)) && !defined(_WIN32)
+#define CB_PANIC_BACKTRACE 1
+#else
+#define CB_PANIC_BACKTRACE 0
+#endif
+#endif // !CB_PANIC_BACKTRACE
+
+#if CB_PANIC_BACKTRACE
+#include <execinfo.h>
+#endif
+
+CBDEF void cb__panicf(const char* file, int line, const char* label, const char* format, ...);
+#define CB_TODO(...) cb__panicf(__FILE__, __LINE__, "TODO", __VA_ARGS__)
+#define CB_UNREACHABLE(...) cb__panicf(__FILE__, __LINE__, "UNREACHABLE", __VA_ARGS__)
+
+#ifdef CB_IMPLEMENTATION
+
 CB_Log_Level cb_minimal_log_level = CB_INFO;
 CB_Log_Handler* cb_log_handler = &cb_default_log_handler;
 
@@ -2058,9 +844,81 @@ CBDEF void cb_null_log_handler(CB_Log_Level level, const char* file, int line, c
     CB_UNUSED(args);
 }
 
+#endif // CB_IMPLEMENTATION
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // Timer
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+// Usage:
+//     CB_TIMER_START("phase");  ...work...  double us = CB_TIMER_END();
+//     cb_timer_end_print();   print this one measurement
+//     cb_timer_end_stat();    add it to the stat entry with the same name
+//     cb_timer_print_stats(); print the whole table
+//
+// Time source: QueryPerformanceCounter on Windows, clock_gettime(CLOCK_MONOTONIC) elsewhere.
+// The stats table grows on demand, so more timer names never lose data.
+// Everything goes to stderr: timing is diagnostics and would pollute stdout and recorded
+// test baselines.
+
+// Nanoseconds per second, for turning clock ticks into a duration.
+#define CB_NANOS_PER_SEC 1000000000ull
+
+// Nesting depth limit. This is not a limit on stat entries: the table grows on demand.
+#ifndef CB_TIMER_MAX_DEPTH
+#define CB_TIMER_MAX_DEPTH 64
+#endif // !CB_TIMER_MAX_DEPTH
+
+typedef struct {
+    const char* name;
+    double total;
+    size_t count;
+    double min;
+    double max;
+} CB_Timer_Stat;
+
+typedef struct {
+    const char* name;
+    double start;
+} CB_Timer_Frame;
+
+typedef struct {
+    CB_Timer_Stat* stats; // dynamic array (items/count/capacity)
+    size_t stats_count;
+    size_t stats_capacity;
+    CB_Timer_Frame stack[CB_TIMER_MAX_DEPTH];
+    size_t sp;
+} CB_Timer;
+
+extern CB_Timer cb_timer;
+
+// ---- declarations ----
+CBDEF double cb_get_time_ms(void);
+CBDEF double cb_get_time_us(void);
+// Nanoseconds from a monotonic clock; only differences between two stamps are meaningful.
+CBDEF uint64_t cb_nanos_since_unspecified_epoch(void);
+
+CBDEF void cb_timer_begin(const char* name);
+// End the current measurement and return the elapsed microseconds.
+CBDEF double cb_timer_end(void);
+// End the current measurement and add it to the stat entry with the same name.
+CBDEF double cb_timer_end_stat(void);
+// End the current measurement and print this one entry to stderr.
+CBDEF void cb_timer_end_print(void);
+// Find or create the stat entry with this name; never returns NULL.
+CBDEF CB_Timer_Stat* cb_timer_get_stat(const char* name);
+// Print the table to a stream (benchmarks use stdout so it can be redirected).
+CBDEF void cb_timer_fprint_stats(FILE* out);
+// Print the table to stderr (the default: timing is diagnostics).
+CBDEF void cb_timer_print_stats(void);
+// Clear stats and the timer stack, keeping the allocated table for reuse.
+CBDEF void cb_timer_reset(void);
+
+// Only these two keep short macro names; everything else uses the function directly.
+#define CB_TIMER_START(timer_name) cb_timer_begin(timer_name)
+#define CB_TIMER_END() cb_timer_end()
+
+#ifdef CB_IMPLEMENTATION
+
 CB_Timer cb_timer = CB_ZERO;
 
 // ---- definitions ----
@@ -2220,11 +1078,150 @@ CBDEF void cb_timer_reset(void)
     cb_timer.sp = 0;
 }
 
+#endif // CB_IMPLEMENTATION
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// Dynamic Array
+////////////////////////////////////////////////////////////////////////////////////////////////////
+typedef struct {
+    const char** items;
+    size_t count;
+    size_t capacity;
+} CB_DArray;
+
+#ifndef CB_DA_INIT_CAP
+#define CB_DA_INIT_CAP 256
+#endif // !CB_DA_INIT_CAP
+
+#define cb_da_free(da) CB_FREE((da).items)
+
+#define cb_da_reserve(da, new_capacity)                                                                                 \
+    do {                                                                                                                \
+        if ((new_capacity) > (da)->capacity) {                                                                          \
+            if ((da)->capacity == 0)                                                                                    \
+                (da)->capacity = CB_DA_INIT_CAP;                                                                        \
+            while ((new_capacity) > (da)->capacity) {                                                                   \
+                (da)->capacity *= 2;                                                                                    \
+            }                                                                                                           \
+            (da)->items = CB_DECLTYPE_CAST((da)->items) CB_REALLOC((da)->items, (da)->capacity * sizeof(*(da)->items)); \
+            cb_alloc_check((da)->items, (da)->capacity * sizeof(*(da)->items));                                        \
+        }                                                                                                               \
+    } while (0)
+
+#define cb_da_append(da, data)                \
+    do {                                      \
+        cb_da_reserve((da), (da)->count + 1); \
+        (da)->items[(da)->count++] = (data);  \
+    } while (0)
+
+
+#define cb_da_append_many(da, new_items, new_items_count)                                                \
+    do {                                                                                                 \
+        size_t cb__n = (size_t)(new_items_count);                                                        \
+        /* n == 0 allows new_items to be NULL, so skip the whole append (memcpy from NULL is UB)    */   \
+        if (cb__n > 0) {                                                                                 \
+            const char* cb__src = (const char*)(new_items);                                              \
+            /* Self-append: the source sits inside the target buffer, realloc invalidates it and the  */ \
+            /* ranges overlap, so remember the offset and then use memmove                            */ \
+            bool cb__self = (da)->items != NULL &&                                                       \
+                            cb__src >= (const char*)(da)->items &&                                       \
+                            cb__src < (const char*)(da)->items + (da)->count * sizeof(*(da)->items);     \
+            size_t cb__off = cb__self ? (size_t)(cb__src - (const char*)(da)->items) : 0;                \
+            cb_da_reserve((da), (da)->count + cb__n);                                                    \
+            if (cb__self) cb__src = (const char*)(da)->items + cb__off;                                  \
+            memmove((da)->items + (da)->count, cb__src, cb__n * sizeof(*(da)->items));                   \
+            (da)->count += cb__n;                                                                        \
+        }                                                                                                \
+    } while (0)
+
+#define cb_da_resize(da, new_size)     \
+    do {                               \
+        cb_da_reserve((da), new_size); \
+        (da)->count = (new_size);      \
+    } while (0)
+
+#define cb_da_pop(da) (da)->items[(CB_ASSERT((da)->count > 0), --(da)->count)]
+#define cb_da_first(da) (da)->items[(CB_ASSERT((da)->count > 0), 0)]
+#define cb_da_last(da) (da)->items[(CB_ASSERT((da)->count > 0), (da)->count - 1)]
+// Overwrite the removed element with the last one (order is not preserved).
+#define cb_da_remove_unordered(da, i)                \
+    do {                                             \
+        size_t j = (i);                              \
+        CB_ASSERT(j < (da)->count);                  \
+        (da)->items[j] = (da)->items[--(da)->count]; \
+    } while (0)
+
+#define cb_da_foreach(Type, it, da) \
+    for (Type* it = (da)->items; it < (da)->items + (da)->count; ++it)
+
+// Drop the contents but keep the allocated memory for reuse.
+#define cb_da_clear(da) ((da)->count = 0)
+
+// Insert one element at index, shifting the tail right.
+#define cb_da_insert(da, index, data)                                      \
+    do {                                                                   \
+        size_t cb__i = (index);                                            \
+        CB_ASSERT(cb__i <= (da)->count);                                    \
+        cb_da_reserve((da), (da)->count + 1);                               \
+        memmove((da)->items + cb__i + 1, (da)->items + cb__i,               \
+                ((da)->count - cb__i) * sizeof(*(da)->items));               \
+        (da)->items[cb__i] = (data);                                        \
+        (da)->count += 1;                                                   \
+    } while (0)
+
+// Remove in order, keeping the relative order of the rest. Use cb_da_remove_unordered when\n// the elements are large and their order does not matter.
+#define cb_da_remove_ordered(da, index)                                    \
+    do {                                                                   \
+        size_t cb__i = (index);                                            \
+        CB_ASSERT(cb__i < (da)->count);                                     \
+        memmove((da)->items + cb__i, (da)->items + cb__i + 1,               \
+                ((da)->count - cb__i - 1) * sizeof(*(da)->items));           \
+        (da)->count -= 1;                                                   \
+    } while (0)
+
+// Iterate backwards; with count == 0 it starts at items, so no items-1 pointer arithmetic.
+#define cb_da_foreach_rev(Type, it, da)                                    \
+    for (Type* it = ((da)->count > 0 ? (da)->items + (da)->count - 1 : (da)->items); \
+         (da)->count > 0 && it >= (da)->items; --it)
+
+// Append to a fixed-capacity inline array ({ T items[N]; size_t count; }): no allocation, no
+// growth, and a full array is a bug rather than something to silently drop an item over.
+#define cb_fa_append(fa, item) \
+    (CB_ASSERT((fa)->count < CB_ARRAY_LEN((fa)->items)), (fa)->items[(fa)->count++] = (item))
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // Bitset
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+// Fixed-size bit set: bits is the number of bits, the storage is uint64_t words and grows on demand.
 
-// ---- definitions ----
+typedef struct {
+    uint64_t* words;
+    size_t word_count;
+    size_t word_capacity;
+    size_t bits;
+} CB_Bitset;
+
+#ifndef CB_BITSET_WORD_BITS
+#define CB_BITSET_WORD_BITS 64
+#endif // !CB_BITSET_WORD_BITS
+
+// ---- declarations ----
+// Resize to bits: new bits read as 0, bits above the new size are dropped.
+CBDEF void cb_bitset_resize(CB_Bitset* bs, size_t bits);
+CBDEF void cb_bitset_set(CB_Bitset* bs, size_t index);
+CBDEF void cb_bitset_unset(CB_Bitset* bs, size_t index);
+CBDEF void cb_bitset_toggle(CB_Bitset* bs, size_t index);
+CBDEF bool cb_bitset_test(const CB_Bitset* bs, size_t index);
+// Clear every bit, keeping the allocated words.
+CBDEF void cb_bitset_clear_all(CB_Bitset* bs);
+// Count the bits whose value equals target.
+CBDEF size_t cb_bitset_count(const CB_Bitset* bs, bool target);
+// Index of the first bit equal to target, or (size_t)-1 when there is none.
+CBDEF size_t cb_bitset_find(const CB_Bitset* bs, bool target);
+CBDEF void cb_bitset_free(CB_Bitset* bs);
+
+#ifdef CB_IMPLEMENTATION
+
 CBDEF void cb_bitset_resize(CB_Bitset* bs, size_t bits)
 {
     size_t need_words = (bits + CB_BITSET_WORD_BITS - 1) / CB_BITSET_WORD_BITS;
@@ -2298,11 +1295,37 @@ CBDEF void cb_bitset_free(CB_Bitset* bs)
     bs->bits = 0;
 }
 
+#endif // CB_IMPLEMENTATION
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // Ring Buffer
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+// Byte ring buffer, FIFO. The capacity is fixed and never grows: a full ring accepts what fits\n// and returns the number of bytes actually written.
 
-// ---- definitions ----
+typedef struct {
+    unsigned char* data;
+    size_t capacity;
+    size_t read_pos;
+    size_t write_pos;
+    size_t count; // bytes currently readable
+} CB_Ring;
+
+// ---- declarations ----
+CBDEF bool cb_ring_init(CB_Ring* ring, size_t capacity);
+CBDEF void cb_ring_free(CB_Ring* ring);
+// How many bytes can still be written.
+CBDEF size_t cb_ring_space(const CB_Ring* ring);
+// Write and return the number of bytes actually written.
+CBDEF size_t cb_ring_write(CB_Ring* ring, const void* data, size_t size);
+// Read and return the number of bytes actually read.
+CBDEF size_t cb_ring_read(CB_Ring* ring, void* out, size_t size);
+// Copy without consuming and return the number of bytes copied.
+CBDEF size_t cb_ring_peek(const CB_Ring* ring, void* out, size_t size);
+// Drop all data without freeing the buffer.
+CBDEF void cb_ring_clear(CB_Ring* ring);
+
+#ifdef CB_IMPLEMENTATION
+
 CBDEF bool cb_ring_init(CB_Ring* ring, size_t capacity)
 {
     memset(ring, 0, sizeof(*ring));
@@ -2374,11 +1397,27 @@ CBDEF void cb_ring_clear(CB_Ring* ring)
     ring->count = 0;
 }
 
+#endif // CB_IMPLEMENTATION
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // Sort
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+// Works on any {items,count,capacity} dynamic array.
+// cb_da_sort uses qsort: fast, but not stable (equal elements may be reordered).
+// cb_da_sort_insertion is stable and very fast on nearly sorted arrays; best for small ones.
 
-// ---- definitions ----
+typedef int (*CB_Compare_Func)(const void* a, const void* b);
+
+// ---- declarations ----
+// Stable insertion sort. It takes the element size so it can move elements byte-wise.
+CBDEF void cb__insertion_sort(void* items, size_t count, size_t elem_size, CB_Compare_Func cmp);
+
+#define cb_da_sort(da, cmp) qsort((da)->items, (da)->count, sizeof(*(da)->items), (cmp))
+#define cb_da_sort_insertion(da, cmp) \
+    cb__insertion_sort((da)->items, (da)->count, sizeof(*(da)->items), (cmp))
+
+#ifdef CB_IMPLEMENTATION
+
 CBDEF void cb__insertion_sort(void* items, size_t count, size_t elem_size, CB_Compare_Func cmp)
 {
     if (count < 2) return;
@@ -2400,9 +1439,68 @@ CBDEF void cb__insertion_sort(void* items, size_t count, size_t elem_size, CB_Co
     cb_temp_rewind(mark);
 }
 
+#endif // CB_IMPLEMENTATION
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // StringBuilder
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+typedef struct {
+    char* items;
+    size_t count;
+    size_t capacity;
+} CB_String_Builder;
+
+// Core invariant: items is always a valid C string. Every append writes '\0' at items[count] and
+// the capacity counts that terminator (count does not), so cb_sb_to_sv / printf("%s") / strstr stay
+// safe at any moment. To put a '\0' inside the payload use cb_sb_append(&sb, '\0') explicitly:
+// that byte is content, not the terminator.
+CBDEF void cb__sb_terminate(CB_String_Builder* sb);
+
+// TODO: may need to add a buffer version, more safe for memory.
+CBDEF bool cb_read_entire_file(const char* path, CB_String_Builder* sb);
+CBDEF int cb_sb_appendf(CB_String_Builder* sb, const char* fmt, ...) CB_PRINTF_FORMAT(2, 3);
+// Pad the builder with 0 bytes up to a multiple of word_size (when building binary formats):
+// content "aaaaa" aligned to 4 becomes "aaaaa000".
+CBDEF void cb_sb_pad_align(CB_String_Builder* sb, size_t size);
+
+// Append a fixed-size buffer.
+#define cb_sb_append_buf(sb, buf, size)         \
+    do {                                        \
+        cb_da_append_many((sb), (buf), (size)); \
+        cb__sb_terminate(sb);                   \
+    } while (0)
+
+// Append a StringView.
+#define cb_sb_append_sv(sb, sv) cb_sb_append_buf((sb), (sv).data, (sv).count)
+
+// Append a NUL-terminated string.
+#define cb_sb_append_cstr(sb, cstr)                    \
+    do {                                               \
+        const char* cb__s = (cstr);                    \
+        cb_sb_append_buf((sb), cb__s, strlen(cb__s));  \
+    } while (0)
+
+// Append a single character.
+#define cb_sb_append(sb, ch)                 \
+    do {                                     \
+        char cb__ch = (char)(ch);            \
+        cb_sb_append_buf((sb), &cb__ch, 1);  \
+    } while (0)
+
+// Append a NUL byte to the payload (nob.h compatibility). cb.h keeps items NUL-terminated by
+// itself, so this is only needed when the NUL is part of the data, not to terminate a string.
+#define cb_sb_append_null(sb) cb_sb_append((sb), '\0')
+
+// Free the memory and zero the fields, so no dangling pointer is left behind.
+#define cb_sb_free(sb)          \
+    do {                        \
+        CB_FREE((sb).items);    \
+        (sb).items = NULL;      \
+        (sb).count = 0;         \
+        (sb).capacity = 0;      \
+    } while (0)
+
+#ifdef CB_IMPLEMENTATION
 
 CBDEF bool cb_read_entire_file(const char* path, CB_String_Builder* sb)
 {
@@ -2479,9 +1577,88 @@ CBDEF void cb_sb_pad_align(CB_String_Builder* sb, size_t size)
     }
 }
 
+#endif // CB_IMPLEMENTATION
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // StringView
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+typedef struct {
+    const char* data;
+    size_t count;
+} CB_String_View;
+
+// Macros for printing a StringView with printf.
+#ifndef CB_SV_FMT
+// Compile-time StringView literal: it saves the strlen that cb_sv_from_cstr("...") would do.
+// The designators must follow the declaration order of CB_String_View (data first, count second):
+// C allows any order, C++ is a hard error ("designator order for field does not match...").
+#define CB_SVLIT(lit) (CB_CLIT(CB_String_View){.data = (lit), .count = sizeof(lit) - 1})
+// Static-initializer form, for MSVC /TC which rejects the compound literal above.
+#define CB_SVLIT_STATIC(lit) {.data = (lit), .count = sizeof(lit) - 1}
+
+#define CB_SV_FMT "%.*s"
+#endif // CB_SV_FMT
+#ifndef CB_SV_ARG
+#define CB_SV_ARG(sv) (int)(sv).count, (sv).data
+#endif // CB_SV_ARG
+// USAGE:
+//   CB_String_View name = ...;
+//   printf("Name: "CB_SV_FMT"\n", CB_SV_ARG(name));
+
+// Copy the StringView into temp storage as a NUL-terminated C string.
+CBDEF const char* cb_sv_to_temp_cstr(CB_String_View sv);
+
+CBDEF bool cb_sv_eq(CB_String_View a, CB_String_View b);
+
+CBDEF CB_String_View cb_sv_from_parts(const char* data, size_t count);
+CBDEF CB_String_View cb_sv_from_cstr(const char* cstr);
+
+// View a StringBuilder as a StringView.
+#define cb_sb_to_sv(sb) cb_sv_from_parts((sb).items, (sb).count)
+
+// Chop while p(current character) is true: return the chopped prefix, move sv forward.
+//     CB_String_View sv = cb_sv_from_cstr("  123abc456");
+//     cb_sv_chop_by_func(&sv, isspace) -> "  ", sv = "123abc456"
+//     cb_sv_chop_by_func(&sv, isdigit) -> "123", sv = "abc456"
+// Move the view forward. An empty view may have data == NULL, and NULL + 0 is UB in C
+// (UBSan: "applying zero offset to null pointer"), so n == 0 returns early.
+#define cb__sv_advance(sv, n)  \
+    do {                       \
+        if ((n) > 0) {         \
+            (sv)->data += (n); \
+            (sv)->count -= (n);\
+        }                      \
+    } while (0)
+
+CBDEF CB_String_View cb_sv_chop_by_func(CB_String_View* sv, int (*p)(int x));
+// Chop up to delim, return that part and drop the delimiter itself.
+//     CB_String_View sv = cb_sv_from_cstr("  1223abc456");
+//     cb_sv_chop_by_delim(&sv, '2') -> "  1", sv = "23abc456"
+CBDEF CB_String_View cb_sv_chop_by_delim(CB_String_View* sv, char delim);
+CBDEF CB_String_View cb_sv_chop_by_delim_r(CB_String_View* sv, char delim);
+CBDEF CB_String_View cb_sv_chop_left(CB_String_View* sv, size_t n);
+CBDEF CB_String_View cb_sv_chop_right(CB_String_View* sv, size_t n);
+
+// True when the view has this prefix/suffix, false otherwise.
+CBDEF bool cb_sv_ends_with(CB_String_View sv, CB_String_View suffix);
+CBDEF bool cb_sv_ends_with_cstr(CB_String_View sv, const char* suffix);
+CBDEF bool cb_sv_starts_with(CB_String_View sv, CB_String_View prefix);
+CBDEF bool cb_sv_starts_with_cstr(CB_String_View sv, const char* prefix);
+
+// Chop the prefix if present and return true, otherwise return false.
+CBDEF bool cb_sv_chop_prefix(CB_String_View* sv, CB_String_View prefix);
+// Chop the suffix if present and return true, otherwise return false.
+CBDEF bool cb_sv_chop_suffix(CB_String_View* sv, CB_String_View suffix);
+
+// Return a view without leading/trailing whitespace; the original view is not modified.
+CBDEF CB_String_View cb_sv_trim_left(CB_String_View sv);
+CBDEF CB_String_View cb_sv_trim_right(CB_String_View sv);
+CBDEF CB_String_View cb_sv_trim(CB_String_View sv);
+
+CBDEF int cb_sv_find(CB_String_View* sv, char ch);
+CBDEF int cb_sv_find_sv(CB_String_View* sv, CB_String_View target, size_t start_offset);
+
+#ifdef CB_IMPLEMENTATION
 
 CBDEF const char* cb_sv_to_temp_cstr(CB_String_View sv)
 {
@@ -2688,9 +1865,17 @@ CBDEF int cb_sv_find_sv(CB_String_View* sv, CB_String_View target, size_t start_
     return -1;
 }
 
+#endif // CB_IMPLEMENTATION
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // UTF-8 Support
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+extern const uint8_t cb_bytes_for_utf8[];
+
+CBDEF size_t cb_sv_utf8_len(CB_String_View sv, size_t* bytes_overrun);
+
+#ifdef CB_IMPLEMENTATION
+
 const uint8_t cb_bytes_for_utf8[] = {
     1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1, 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
     1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1, 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
@@ -2718,11 +1903,40 @@ CBDEF size_t cb_sv_utf8_len(CB_String_View sv, size_t* bytes_overrun)
     return 0;
 }
 
+#endif // CB_IMPLEMENTATION
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // StringView Tools
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+// Case conversion; the result lives in temp storage.
+CBDEF char* cb_sv_to_temp_upper(CB_String_View sv);
+CBDEF char* cb_sv_to_temp_lower(CB_String_View sv);
+CBDEF bool cb_sv_eq_ignore_case(CB_String_View a, CB_String_View b);
 
-// ---- definitions ----
+// Number parsing is strict and allows surrounding whitespace: on success it writes *out and returns
+// true, on failure it returns false and leaves *out untouched. 0x/0X hex, 0b/0B binary and 0o/0O
+// octal prefixes are accepted; integers take no decimal point and no exponent.
+CBDEF bool cb_sv_to_i64(CB_String_View sv, int64_t* out);
+CBDEF bool cb_sv_to_u64(CB_String_View sv, uint64_t* out);
+CBDEF bool cb_sv_to_f64(CB_String_View sv, double* out);
+
+// Take the next delim-separated field; sv is consumed in place.
+//     while (cb_sv_split_next(&sv, ',', &part)) { ... }
+CBDEF bool cb_sv_split_next(CB_String_View* sv, char delim, CB_String_View* out);
+// Append parts joined by sep to sb (no trailing separator).
+CBDEF void cb_sb_append_join(CB_String_Builder* sb, const CB_String_View* parts, size_t count, CB_String_View sep);
+
+// UTF-8: decode one code point.
+CBDEF bool cb_utf8_decode(const char* data, size_t size, uint32_t* out_codepoint, size_t* out_length);
+// Encode one code point into out (at least 4 bytes) and return the length; 0 when invalid.
+CBDEF size_t cb_utf8_encode(uint32_t codepoint, char out[4]);
+// Take one code point from the head of sv and move sv forward.
+CBDEF bool cb_sv_utf8_next(CB_String_View* sv, uint32_t* out_codepoint);
+// Validate the view as UTF-8; on failure out_bad_offset receives the offending index.
+CBDEF bool cb_utf8_validate(CB_String_View sv, size_t* out_bad_offset);
+
+#ifdef CB_IMPLEMENTATION
+
 CBDEF char* cb_sv_to_temp_upper(CB_String_View sv)
 {
     char* result = cb_temp_strndup(sv.data, sv.count);
@@ -2966,11 +2180,83 @@ CBDEF bool cb_utf8_validate(CB_String_View sv, size_t* out_bad_offset)
     return true;
 }
 
+#endif // CB_IMPLEMENTATION
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // HashMap
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+// Open addressing with linear probing. Keys are copied into the map, so the caller does not have
+//
+// Storage backends:
+//   - CB_REALLOC / CB_FREE by default
+//   - after cb_map_init_arena(&m, &arena, n) every allocation comes from the arena.
+//     The arena cannot free single blocks, so slot arrays abandoned by a rehash live until
+//
+// Usage:
+//   CB_Map m = CB_ZERO;
+//   cb_map_put_cstr(&m, "answer", (void*)(intptr_t)42);
+//   void* v = NULL;
+//   if (cb_map_get_cstr(&m, "answer", &v)) { ... }
+//   cb_map_foreach(&m, it) { printf("%.*s\n", (int)it.key.count, it.key.data); }
+//   cb_map_free(&m);
 
-// ---- definitions ----
+#ifndef CB_MAP_INIT_CAPACITY
+#define CB_MAP_INIT_CAPACITY 16
+#endif // !CB_MAP_INIT_CAPACITY
+
+#define CB_MAP_EMPTY 0
+#define CB_MAP_USED 1
+#define CB_MAP_TOMBSTONE 2
+
+typedef struct {
+    CB_String_View key; // key.data points at the copy owned by the map
+    void* value;
+    uint64_t hash; // cached hash, so a rehash does not recompute it
+    uint8_t state;
+} CB_Map_Slot;
+
+typedef struct {
+    CB_Map_Slot* slots;
+    size_t capacity; // slot count, always a power of two; 0 means nothing allocated yet
+    size_t count;    // live entries
+    size_t tombstones;
+    CB_Arena* arena; // when non-NULL every allocation comes from the arena
+} CB_Map;
+
+typedef struct {
+    CB_Map* map;
+    size_t index;
+    CB_String_View key; // current entry, filled in by cb_map_next
+    void* value;
+} CB_Map_Iter;
+
+// ---- hashing ----
+CBDEF uint64_t cb_hash_bytes(const void* data, size_t size);
+CBDEF uint64_t cb_hash_u64(uint64_t value);
+
+// ---- declarations ----
+CBDEF void cb_map_init_capacity(CB_Map* map, size_t capacity);
+// Arena backend: every allocation comes from the arena, which must outlive the map.
+CBDEF void cb_map_init_arena(CB_Map* map, CB_Arena* arena, size_t capacity);
+// Insert or overwrite (the key is copied). A NULL value is allowed.
+CBDEF void cb_map_put(CB_Map* map, CB_String_View key, void* value);
+CBDEF void cb_map_put_cstr(CB_Map* map, const char* key, void* value);
+// A miss returns false and leaves *out untouched; out may be NULL to only test presence.
+CBDEF bool cb_map_get(const CB_Map* map, CB_String_View key, void** out);
+CBDEF bool cb_map_get_cstr(const CB_Map* map, const char* key, void** out);
+CBDEF bool cb_map_has(const CB_Map* map, CB_String_View key);
+CBDEF bool cb_map_del(CB_Map* map, CB_String_View key);
+CBDEF size_t cb_map_count(const CB_Map* map);
+// Drop the entries but keep the allocated capacity.
+CBDEF void cb_map_clear(CB_Map* map);
+CBDEF void cb_map_free(CB_Map* map);
+CBDEF CB_Map_Iter cb_map_iter(CB_Map* map);
+CBDEF bool cb_map_next(CB_Map_Iter* it);
+#define cb_map_foreach(map, it) \
+    for (CB_Map_Iter it = cb_map_iter(map); cb_map_next(&it);)
+
+#ifdef CB_IMPLEMENTATION
+
 CBDEF uint64_t cb_hash_bytes(const void* data, size_t size)
 {
 // FNV-1a 64: good on short keys and trivial to implement.
@@ -3199,11 +2485,53 @@ CBDEF bool cb_map_next(CB_Map_Iter* it)
     return false;
 }
 
+#endif // CB_IMPLEMENTATION
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // HashMap (uint64 keys)
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+// Same open-addressing implementation as CB_Map, with integer keys and a cheaper hash/comparison.
+// Keys need no separate allocation, so this version is leaner than the string-key one.
 
-// ---- definitions ----
+typedef struct {
+    uint64_t key;
+    void* value;
+    uint64_t hash;
+    uint8_t state;
+} CB_Map_U64_Slot;
+
+typedef struct {
+    CB_Map_U64_Slot* slots;
+    size_t capacity;
+    size_t count;
+    size_t tombstones;
+    CB_Arena* arena;
+} CB_Map_U64;
+
+typedef struct {
+    CB_Map_U64* map;
+    size_t index;
+    uint64_t key;
+    void* value;
+} CB_Map_U64_Iter;
+
+// ---- declarations ----
+CBDEF void cb_map_u64_init_capacity(CB_Map_U64* map, size_t capacity);
+CBDEF void cb_map_u64_init_arena(CB_Map_U64* map, CB_Arena* arena, size_t capacity);
+CBDEF void cb_map_u64_put(CB_Map_U64* map, uint64_t key, void* value);
+CBDEF bool cb_map_u64_get(const CB_Map_U64* map, uint64_t key, void** out);
+CBDEF bool cb_map_u64_has(const CB_Map_U64* map, uint64_t key);
+CBDEF bool cb_map_u64_del(CB_Map_U64* map, uint64_t key);
+CBDEF size_t cb_map_u64_count(const CB_Map_U64* map);
+CBDEF void cb_map_u64_clear(CB_Map_U64* map);
+CBDEF void cb_map_u64_free(CB_Map_U64* map);
+CBDEF CB_Map_U64_Iter cb_map_u64_iter(CB_Map_U64* map);
+CBDEF bool cb_map_u64_next(CB_Map_U64_Iter* it);
+#define cb_map_u64_foreach(map, it) \
+    for (CB_Map_U64_Iter it = cb_map_u64_iter(map); cb_map_u64_next(&it);)
+
+#ifdef CB_IMPLEMENTATION
+
 CBDEF void* cb__map_u64_alloc(CB_Map_U64* map, size_t size)
 {
     if (map->arena != NULL) return cb_arena_alloc(map->arena, size);
@@ -3377,9 +2705,122 @@ CBDEF bool cb_map_u64_next(CB_Map_U64_Iter* it)
     return false;
 }
 
+#endif // CB_IMPLEMENTATION
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // File System
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+// PATH_MAX is optional in POSIX, so provide a fallback before anyone uses it.
+#ifndef CB_PATH_MAX
+#ifdef PATH_MAX
+#define CB_PATH_MAX PATH_MAX
+#else
+#define CB_PATH_MAX 4096
+#endif /* PATH_MAX */
+#endif /* !CB_PATH_MAX */
+#ifdef _WIN32
+// Based on https://stackoverflow.com/a/75644008 (.NET uses a 4096 * sizeof(WCHAR) stack buffer).
+#ifndef CB_WIN32_ERR_MSG_SIZE
+#define CB_WIN32_ERR_MSG_SIZE (4 * 1024)
+#endif // CB_WIN32_ERR_MSG_SIZE
+
+CBDEF char* cb_win32_error_message(DWORD err);
+#endif // _WIN32
+
+CBDEF const char* cb_path_name(const char* path);
+CBDEF bool cb_rename(const char* old_path, const char* new_path);
+CBDEF int cb_file_exists(const char* file_path);
+CBDEF const char* cb_get_current_dir_temp(void);
+CBDEF bool cb_set_current_dir(const char* path);
+
+CBDEF char* cb_temp_dir_name(const char* path);
+CBDEF char* cb_temp_file_name(const char* path);
+CBDEF char* cb_temp_file_ext(const char* path);
+CBDEF char* cb_temp_running_executable_path(void);
+
+// File types are split only five ways: error / regular file / directory / symlink / other.
+// Finer kinds (FIFO, socket, device, junction) are not implemented.
+
+typedef enum {
+    CB_FILE_ERROR = -1,
+    CB_FILE_REGULAR = 0,
+    CB_FILE_DIRECTORY,
+    CB_FILE_SYMLINK,
+    CB_FILE_OTHER,
+} CB_File_Type;
+
+typedef enum {
+    CB_WALK_CONT,
+    CB_WALK_SKIP,
+    CB_WALK_STOP,
+} CB_Walk_Action;
+
+typedef struct {
+    const char* path;
+    CB_File_Type type;
+    size_t level;
+    void* data;
+    CB_Walk_Action* action;
+} CB_Walk_Entry;
+
+typedef bool (*CB_Walk_Func)(CB_Walk_Entry entry);
+
+// Only the fields you care about are needed: cb_walk_dir(root, fn, .post_order = true) / (.data = &x);
+// the rest fall back to the defaults from CB__DEFAULT (see the General section).
+// The struct must be tagged: in C++ an "anonymous struct with default member initializers"
+// is reported by -Wnon-c-typedef-for-linkage.
+typedef struct CB_Walk_Dir_Opt {
+    void* data CB__DEFAULT(nullptr);
+    bool post_order CB__DEFAULT(false);
+} CB_Walk_Dir_Opt;
+
+CBDEF bool cb_delete_walk_entry(CB_Walk_Entry entry);
+CBDEF bool cb__walk_dir_opt_impl(CB_String_Builder* file_path, CB_Walk_Func func, size_t level, bool* stop, CB_Walk_Dir_Opt opt);
+CBDEF bool cb_walk_dir_opt(const char* root, CB_Walk_Func func, CB_Walk_Dir_Opt opt);
+#define cb_walk_dir(root, func, ...) cb_walk_dir_opt((root), (func), CB_CLIT(CB_Walk_Dir_Opt){__VA_ARGS__})
+
+typedef struct {
+    char* name;
+    bool error;
+
+    struct {
+#ifdef _WIN32
+        WIN32_FIND_DATA win32_data;
+        HANDLE win32_hFind;
+        bool win32_init;
+#else
+        DIR* posix_dir;
+        struct dirent* posix_ent;
+#endif // _WIN32
+    } cb__private;
+} CB_Dir_Entry;
+
+// Open a directory for iteration. Returns false on failure (cb_log prints the error).
+CBDEF bool cb_dir_entry_open(const char* dir_path, CB_Dir_Entry* dir);
+// Fetch the next entry. false means the end or an error (dir->error is set in that case).
+CBDEF bool cb_dir_entry_next(CB_Dir_Entry* dir);
+CBDEF void cb_dir_entry_close(CB_Dir_Entry dir);
+
+typedef struct {
+    const char** items;
+    size_t count;
+    size_t capacity;
+} CB_File_Paths;
+
+
+// Recursive mkdir (mkdir -p): intermediate levels are created, an existing directory is fine.
+CBDEF bool cb_mkdir_if_not_exists(const char* path);
+CBDEF bool cb_copy_file(const char* src_path, const char* dst_path);
+CBDEF bool cb_copy_directory_recursively(const char* src_path, const char* dst_path);
+CBDEF bool cb_delete_directory_recursively(const char* dir_path);
+// List a directory's entry names (without "." and ".."); the memory is temp storage.
+CBDEF bool cb_read_entire_dir(const char* parent, CB_File_Paths* children);
+CBDEF bool cb_write_entire_file(const char* path, const void* data, size_t size);
+CBDEF CB_File_Type cb_get_file_type(const char* path);
+CBDEF bool cb_delete_file(const char* path);
+
+#ifdef CB_IMPLEMENTATION
+
 #ifdef _WIN32
 
 CBDEF char* cb_win32_error_message(DWORD err)
@@ -4032,11 +3473,39 @@ CBDEF bool cb_delete_file(const char* path)
 #endif // _WIN32
 }
 
+#endif // CB_IMPLEMENTATION
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // Path
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+// Results are allocated in temp storage. These functions only manipulate strings and never
+// touch the file system (cb_path_absolute is the exception: it reads the current directory).
 
-// ---- definitions ----
+// ---- declarations ----
+// Absolute path? POSIX: starts with '/'; Windows: starts with '/' or '\\', or looks like C:/
+CBDEF bool cb_path_is_absolute(const char* path);
+// Path separator predicate ('\\' on Windows, '/' elsewhere).
+CBDEF bool cb_path_is_sep(char c);
+// Join two path parts, handling separators (no doubled separator is produced).
+// When b is absolute, a is ignored and b is returned (same convention as os.path.join).
+CBDEF char* cb_path_join(const char* a, const char* b);
+// Collapse doubled separators and resolve "." and "..". No symlinks, no file system access.
+// Relative paths stay relative; a ".." at the root is dropped ("/.." -> "/").
+CBDEF char* cb_path_normalize(const char* path);
+// Turn a relative path into an absolute one (current directory + normalize).
+CBDEF char* cb_path_absolute(const char* path);
+// Replace the extension. new_ext may or may not start with a dot; NULL or "" removes it.
+// Only the part after the last dot of the last path component is touched.
+CBDEF char* cb_path_replace_ext(const char* path, const char* new_ext);
+
+#ifdef _WIN32
+#define CB_PATH_SEP '\\'
+#else
+#define CB_PATH_SEP '/'
+#endif // _WIN32
+
+#ifdef CB_IMPLEMENTATION
+
 CBDEF bool cb_path_is_sep(char c)
 {
 #ifdef _WIN32
@@ -4159,11 +3628,55 @@ CBDEF char* cb_path_replace_ext(const char* path, const char* new_ext)
     return cb_temp_sprintf("%.*s.%s", (int)base_len, path, ext);
 }
 
+#endif // CB_IMPLEMENTATION
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // File System Extras
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+#ifdef _WIN32
+#define CB_PROCESS_ID() ((unsigned long)GetCurrentProcessId())
+#else
+#define CB_PROCESS_ID() ((unsigned long)getpid())
+#endif // _WIN32
 
-// ---- definitions ----
+// ---- declarations ----
+// File size in bytes; (size_t)-1 on failure. A directory's size is platform dependent.
+CBDEF size_t cb_file_size(const char* path);
+// Last modification time (Unix seconds); -1 on failure.
+CBDEF int64_t cb_file_mtime(const char* path);
+
+// Atomic write: write a temp file next to the target, then rename over it.
+// rename is atomic within one file system, so the target is never seen half written.
+CBDEF bool cb_write_entire_file_atomic(const char* path, const void* data, size_t size);
+
+// Create a symlink. On Windows this needs developer mode or administrator rights.
+CBDEF bool cb_create_symlink(const char* target, const char* link_path);
+// Read a symlink target (allocated in temp storage); NULL on failure.
+CBDEF char* cb_read_symlink(const char* path);
+
+// Wildcard match: * any run, ? one character, [abc] / [a-z] / [!abc] character classes.
+CBDEF bool cb_glob_match(const char* pattern, const char* text);
+// List the entries of dir matching pattern (one level only, no recursion).
+// out receives full "dir/name" paths; the memory is temp storage.
+CBDEF bool cb_glob(const char* dir, const char* pattern, CB_File_Paths* out);
+
+// Read-only memory mapping, for zero-copy reads of large files.
+typedef struct {
+    void* data;
+    size_t size;
+#ifdef _WIN32
+    HANDLE file_handle;
+    HANDLE mapping_handle;
+#else
+    int fd;
+#endif // _WIN32
+} CB_Mmap;
+
+CBDEF bool cb_mmap_open(const char* path, CB_Mmap* out);
+CBDEF void cb_mmap_close(CB_Mmap* mmap);
+
+#ifdef CB_IMPLEMENTATION
+
 CBDEF size_t cb_file_size(const char* path)
 {
 #ifdef _WIN32
@@ -4532,15 +4045,94 @@ CBDEF void cb_mmap_close(CB_Mmap* mmap)
 #endif
 }
 
+#endif // CB_IMPLEMENTATION
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // Math & Bits
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+// cb_min / cb_max / cb_clamp. On GCC/Clang every argument is evaluated exactly once and keeps its
+// own type; on other compilers the plain macro fallback evaluates an argument twice, so do not pass
+// something like i++ to it. C++ uses templates and has no such restriction.
+
 #ifdef __cplusplus
+
+template <typename T>
+struct cb__remove_ref {
+    typedef T type;
+};
+template <typename T>
+struct cb__remove_ref<T&> {
+    typedef T type;
+};
+
+// References are stripped for the C++ version: `a < b ? a : b` yields an lvalue, so decltype
+// would give T& and the function would return a dangling reference to a local copy.
+#define CB__MINMAX_RET(expr) typename cb__remove_ref<decltype(expr)>::type
+
+template <typename T, typename U>
+constexpr auto cb_min(T a, U b) -> CB__MINMAX_RET(a < b ? a : b)
+{
+    return a < b ? a : b;
+}
+
+template <typename T, typename U>
+constexpr auto cb_max(T a, U b) -> CB__MINMAX_RET(a > b ? a : b)
+{
+    return a > b ? a : b;
+}
+
+template <typename T, typename U, typename V>
+constexpr auto cb_clamp(T x, U lo, V hi) -> CB__MINMAX_RET(cb_min(cb_max(x, lo), hi))
+{
+    return cb_min(cb_max(x, lo), hi);
+}
+
 #else // !__cplusplus
+
+#if defined(__GNUC__) || defined(__clang__)
+// Single evaluation: each argument is read exactly once and keeps its own type, so
+// cb_min(2, 1.9) is 1.9 rather than a truncated 1.
+#define cb_min(a, b) \
+    __extension__({ __typeof__(a) cb__a = (a); __typeof__(b) cb__b = (b); cb__a < cb__b ? cb__a : cb__b; })
+#define cb_max(a, b) \
+    __extension__({ __typeof__(a) cb__a = (a); __typeof__(b) cb__b = (b); cb__a > cb__b ? cb__a : cb__b; })
+#define cb_clamp(x, lo, hi) \
+    __extension__({ __typeof__(x) cb__x = (x); __typeof__(lo) cb__lo = (lo); __typeof__(hi) cb__hi = (hi); \
+                    cb__x < cb__lo ? cb__lo : (cb__x > cb__hi ? cb__hi : cb__x); })
+#else
+// Portable fallback: each argument is evaluated twice, so avoid side effects in the arguments.
+#define cb_min(a, b) ((a) < (b) ? (a) : (b))
+#define cb_max(a, b) ((a) > (b) ? (a) : (b))
+#define cb_clamp(x, lo, hi) ((x) < (lo) ? (lo) : ((x) > (hi) ? (hi) : (x)))
+#endif
+
 
 #endif // __cplusplus
 
-// ---- definitions ----
+// Round value up/down to a multiple of alignment (a power of two):
+//     cb_align_up(13, 8) -> 16        cb_align_down(13, 8) -> 8
+#define cb_align_up(value, alignment) (((value) + (alignment) - 1) & ~((alignment) - 1))
+#define cb_align_down(value, alignment) ((value) & ~((alignment) - 1))
+
+// ---- declarations ----
+CBDEF bool cb_is_pow2(uint64_t value);
+// Round up to the next power of two: 0 and 1 give 1, overflow gives 0.
+//     cb_next_pow2(100) -> 128
+CBDEF uint64_t cb_next_pow2(uint64_t value);
+// Number of set bits: cb_popcount64(0xFF00) -> 8.
+CBDEF int cb_popcount64(uint64_t value);
+// Trailing/leading zero count: cb_ctz64(8) -> 3, cb_clz64(1) -> 63; both give 64 for 0.
+CBDEF int cb_ctz64(uint64_t value);
+CBDEF int cb_clz64(uint64_t value);
+CBDEF uint64_t cb_rotl64(uint64_t value, int amount);
+CBDEF uint64_t cb_rotr64(uint64_t value, int amount);
+// Host byte order: cb_is_little_endian() -> true on x86 and ARM.
+CBDEF bool cb_is_little_endian(void);
+CBDEF uint32_t cb_bswap32(uint32_t value);
+CBDEF uint64_t cb_bswap64(uint64_t value);
+
+#ifdef CB_IMPLEMENTATION
+
 CBDEF bool cb_is_pow2(uint64_t value)
 {
     return value != 0 && (value & (value - 1)) == 0;
@@ -4636,11 +4228,22 @@ CBDEF uint64_t cb_bswap64(uint64_t value)
            (uint64_t)cb_bswap32((uint32_t)(value >> 32));
 }
 
+#endif // CB_IMPLEMENTATION
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // Time & Date
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+// Current UTC time in Unix seconds: cb_time_now() -> 1758400000.
+CBDEF int64_t cb_time_now(void);
+// Unix seconds to an ISO 8601 UTC string in temp storage:
+//     cb_time_to_iso8601(1758400000) -> "2025-09-21T18:13:20Z"
+CBDEF char* cb_time_to_iso8601(int64_t unix_seconds);
+// Human-readable duration in temp storage: 0.42 -> "420ms", 12.5 -> "12.5s",
+// 185 -> "3m5s", 7325 -> "2h2m".
+CBDEF char* cb_duration_to_str(double seconds);
 
-// ---- definitions ----
+#ifdef CB_IMPLEMENTATION
+
 CBDEF int64_t cb_time_now(void)
 {
     return (int64_t)time(NULL);
@@ -4682,11 +4285,31 @@ CBDEF char* cb_duration_to_str(double seconds)
     return cb_temp_sprintf("%lldm%llds", (long long)minutes, (long long)secs);
 }
 
+#endif // CB_IMPLEMENTATION
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // Random
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+// xoshiro256** state. Better than rand() and identical on every platform, so a seed reproduces
+// a run exactly. Fine for simulation, sampling and shuffling, NOT for cryptography.
+//     CB_Rng rng; cb_rng_seed(&rng, 42); uint64_t x = cb_rng_next(&rng);
 
-// ---- definitions ----
+typedef struct {
+    uint64_t state[4];
+} CB_Rng;
+
+// ---- declarations ----
+CBDEF void cb_rng_seed(CB_Rng* rng, uint64_t seed);
+CBDEF uint64_t cb_rng_next(CB_Rng* rng);
+// Uniform double in [0,1): cb_rng_double(&rng) -> 0.379...
+CBDEF double cb_rng_double(CB_Rng* rng);
+// Uniform integer in [0,bound): cb_rng_range(&rng, 10) -> 0..9; bound 0 returns 0.
+CBDEF uint64_t cb_rng_range(CB_Rng* rng, uint64_t bound);
+// Fisher-Yates shuffle in place: cb_rng_shuffle(&rng, xs, count, sizeof(xs[0]));
+CBDEF void cb_rng_shuffle(CB_Rng* rng, void* items, size_t count, size_t elem_size);
+
+#ifdef CB_IMPLEMENTATION
+
 CBDEF uint64_t cb__rng_splitmix64(uint64_t* state)
 {
     uint64_t z = (*state += 0x9E3779B97F4A7C15ull);
@@ -4755,11 +4378,25 @@ CBDEF void cb_rng_shuffle(CB_Rng* rng, void* items, size_t count, size_t elem_si
     cb_temp_rewind(mark);
 }
 
+#endif // CB_IMPLEMENTATION
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // Runtime Environment
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+// Environment variable copied into temp storage, NULL when unset (like getenv):
+//     const char* home = cb_env_get("HOME");
+CBDEF char* cb_env_get(const char* name);
+CBDEF bool cb_env_set(const char* name, const char* value);
+// Is stdout a terminal? cb_stdout_is_tty() -> false when the output is redirected.
+CBDEF bool cb_stdout_is_tty(void);
+// Terminal width in columns, 80 when it cannot be determined.
+CBDEF int cb_terminal_width(void);
+// Are ANSI colors wanted? true when stdout is a tty, NO_COLOR is unset and colors were not
+// disabled explicitly.
+CBDEF bool cb_color_enabled(void);
 
-// ---- definitions ----
+#ifdef CB_IMPLEMENTATION
+
 CBDEF char* cb_env_get(const char* name)
 {
     const char* value = getenv(name);
@@ -4814,9 +4451,15 @@ CBDEF bool cb_color_enabled(void)
     return cb_stdout_is_tty();
 }
 
+#endif // CB_IMPLEMENTATION
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // Hex Dump
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+CBDEF void cb_dump_hex(const void* data, size_t size);
+
+#ifdef CB_IMPLEMENTATION
+
 // Hex dump, 16 bytes per line, written to stderr (offset + hex + ASCII). Diagnostics go to
 // stderr so stdout stays clean:
 //     cb_dump_hex(bytes, sizeof(bytes));
@@ -4840,11 +4483,54 @@ CBDEF void cb_dump_hex(const void* data, size_t size)
     }
 }
 
+#endif // CB_IMPLEMENTATION
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // CLI Args
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+// Minimal argument parser. Accepted forms:
+//     --key=value   option with a value
+//     --key         switch (value is NULL)
+//     -k            switch, same as --k
+//     -k=value      option with a value
+//     --            everything after it is a positional argument
+//     anything else is a positional argument
+// "--key value" (space separated) is not supported: write --key=value.
+//     CB_Args args; cb_args_parse(&args, argc, argv);
+//     if (cb_args_has(&args, "verbose")) { ... }
+//     const char* out = cb_args_get(&args, "out", "a.bin");
 
-// ---- definitions ----
+typedef struct {
+    const char* name;  // name without the leading - / --
+    const char* value; // NULL for a switch
+} CB_Arg_Entry;
+
+typedef struct {
+    CB_Arg_Entry* items;
+    size_t count;
+    size_t capacity;
+} CB_Arg_List;
+
+typedef struct {
+    CB_Arg_List options;
+    CB_File_Paths positionals;
+} CB_Args;
+
+// ---- declarations ----
+// Pass main's argc/argv; argv[0] is treated as the program name and skipped.
+CBDEF void cb_args_parse(CB_Args* args, int argc, char** argv);
+// Was this switch/option given?
+CBDEF bool cb_args_has(const CB_Args* args, const char* name);
+// Value of an option, or fallback when it is absent (the last occurrence wins).
+CBDEF const char* cb_args_get(const CB_Args* args, const char* name, const char* fallback);
+// cb_args_get_first() returns the first occurrence instead of the last one.
+CBDEF const char* cb_args_get_first(const CB_Args* args, const char* name);
+CBDEF size_t cb_args_positional_count(const CB_Args* args);
+CBDEF const char* cb_args_positional(const CB_Args* args, size_t index);
+CBDEF void cb_args_free(CB_Args* args);
+
+#ifdef CB_IMPLEMENTATION
+
 CBDEF void cb_args_parse(CB_Args* args, int argc, char** argv)
 {
     bool only_positionals = false;
@@ -4934,9 +4620,49 @@ CBDEF void cb_args_free(CB_Args* args)
     args->positionals.capacity = 0;
 }
 
+#endif // CB_IMPLEMENTATION
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // Process & FD
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+#ifdef _WIN32
+typedef HANDLE CB_Proc;
+#define CB_INVALID_PROC INVALID_HANDLE_VALUE
+typedef HANDLE CB_FD;
+#define CB_INVALID_FD INVALID_HANDLE_VALUE
+#else
+typedef int CB_Proc;
+#define CB_INVALID_PROC (-1)
+typedef int CB_FD;
+#define CB_INVALID_FD (-1)
+#endif // _WIN32
+
+CBDEF CB_FD cb_fd_open_read(const char* path);
+CBDEF CB_FD cb_fd_open_write(const char* path);
+CBDEF void cb_fd_close(CB_FD fd);
+
+typedef struct {
+    CB_FD read;
+    CB_FD write;
+} CB_Pipe;
+
+CBDEF bool cb_pipe_create(CB_Pipe* pp);
+
+typedef struct {
+    CB_Proc* items;
+    size_t count;
+    size_t capacity;
+} CB_Procs;
+
+CBDEF int cb__proc_wait_async(CB_Proc proc, int ms);
+// Wait for one child: cb_proc_wait(proc) -> true when it exited with status 0.
+CBDEF bool cb_proc_wait(CB_Proc proc);
+// Wait for every process of the array: cb_procs_wait(procs).
+CBDEF bool cb_procs_wait(CB_Procs procs);
+// Wait for all of them and reset the array for reuse: cb_procs_wait_and_reset(&procs).
+CBDEF bool cb_procs_wait_and_reset(CB_Procs* procs);
+
+#ifdef CB_IMPLEMENTATION
 
 CBDEF CB_FD cb_fd_open_read(const char* path)
 {
@@ -5175,12 +4901,74 @@ CBDEF bool cb_procs_wait_and_reset(CB_Procs* procs)
     return success;
 }
 
+#endif // CB_IMPLEMENTATION
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // Cmd
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+typedef struct {
+    const char** items;
+    size_t count;
+    size_t capacity;
+} CB_Cmd;
+
+// Options of cb_cmd_run_opt(); the cb_cmd_run(cmd, ...) macro fills them by name:
+//     cb_cmd_run(&cmd, .stdout_path = "out.txt", .async = &procs, .max_procs = 4);
+typedef struct CB_Cmd_Opt {
+    // run asynchronously, appending the CB_Proc to this array
+    CB_Procs* async CB__DEFAULT(nullptr);
+    // concurrency limit for .async; 0 means cb_nprocs()
+    size_t max_procs CB__DEFAULT(0);
+    // keep cmd.count after the run, so the same command can be run again
+    bool dont_reset CB__DEFAULT(false);
+    // redirect stdin from this file
+    const char* stdin_path CB__DEFAULT(nullptr);
+    // redirect stdout to this file
+    const char* stdout_path CB__DEFAULT(nullptr);
+    // redirect stderr to this file
+    const char* stderr_path CB__DEFAULT(nullptr);
+} CB_Cmd_Opt;
+
+CBDEF void cb__cmd_append(CB_Cmd* cmd, size_t n, const char** args);
 #ifdef __cplusplus
+template <typename... Args>
+#define cb_cmd_append(cmd, ...) cb__cpp_cmd_append_wrapper(cmd, __VA_ARGS__)
+CBDEF void cb__cpp_cmd_append_wrapper(CB_Cmd* cmd, Args... strs)
+{
+    const char* args[] = {strs...};
+    cb__cmd_append(cmd, sizeof(args) / sizeof(args[0]), args);
+}
 #else
+#define cb_cmd_append(cmd, ...) \
+    cb__cmd_append(cmd, sizeof((const char*[]){__VA_ARGS__}) / sizeof(const char*), (const char*[]){__VA_ARGS__})
 #endif // __cplusplus
+
+// Append every argument of another command: cb_cmd_extend(&cmd, &other);
+#define cb_cmd_extend(cmd, other_cmd) \
+    cb_da_append_many((cmd), (other_cmd)->items, (other_cmd)->count)
+// Free the argv storage and zero the handle: cb_cmd_free(cmd);
+#define cb_cmd_free(cmd) \
+    do {                     \
+        cb_da_free(cmd);     \
+        (cmd).items = NULL;  \
+        (cmd).count = 0;     \
+        (cmd).capacity = 0;  \
+    } while (0)
+
+CBDEF void cb_cmd_to_sb(CB_Cmd cmd, CB_String_Builder* sb);
+CBDEF int cb_nprocs(void);
+CBDEF CB_Proc cb__cmd_start_process(CB_Cmd cmd, CB_FD* fdin, CB_FD* fdout, CB_FD* fderr);
+CBDEF bool cb_cmd_run_opt(CB_Cmd* cmd, CB_Cmd_Opt opt);
+CBDEF bool cb__cmd_run_opt_with_location(CB_Cmd* cmd, const char* file, int line, CB_Cmd_Opt opt);
+#define cb_cmd_run(cmd, ...) cb__cmd_run_opt_with_location((cmd), __FILE__, __LINE__, CB_CLIT(CB_Cmd_Opt){__VA_ARGS__})
+
+typedef struct {
+    CB_FD fdin;
+    CB_Cmd cmd;
+    bool err2out;
+} CB_Pipes;
+
+#ifdef CB_IMPLEMENTATION
 
 CBDEF void cb__cmd_append(CB_Cmd* cmd, size_t n, const char** args)
 {
@@ -5416,11 +5204,63 @@ CBDEF bool cb__cmd_run_opt_with_location(CB_Cmd* cmd, const char* file, int line
     return ok;
 }
 
+#endif // CB_IMPLEMENTATION
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // Cmd Chain
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+// Pipeline of commands; the code below is equivalent to "foo | bar | baz > out.txt":
+//   CB_Chain chain = CB_ZERO;  CB_Cmd cmd = CB_ZERO;
+//   if (!cb_chain_begin(&chain)) return 1;
+//   cb_cmd_append(&cmd, "foo"); if (!cb_chain_cmd(&chain, &cmd)) return 1;
+//   cb_cmd_append(&cmd, "bar"); if (!cb_chain_cmd(&chain, &cmd)) return 1;
+//   cb_cmd_append(&cmd, "baz"); if (!cb_chain_cmd(&chain, &cmd)) return 1;
+//   if (!cb_chain_end(&chain, .stdout_path = "out.txt")) return 1;
+//
+// The only allocation inside CB_Chain is .cmd; free it with cb_da_free(chain.cmd) when reusing.
 
-// ---- definitions ----
+typedef struct {
+    // output end of the previous command, used as the input of the next one
+    CB_FD fdin;
+    // command accumulated by the last cb_chain_cmd()
+    CB_Cmd cmd;
+    // .err2out of the last cb_chain_cmd()
+    bool err2out;
+} CB_Chain;
+
+typedef struct CB_Chain_Begin_Opt {
+    const char* stdin_path CB__DEFAULT(nullptr);
+} CB_Chain_Begin_Opt;
+
+typedef struct CB_Chain_Cmd_Opt {
+    bool err2out CB__DEFAULT(false);
+    bool dont_reset CB__DEFAULT(false);
+} CB_Chain_Cmd_Opt;
+
+typedef struct CB_Chain_End_Opt {
+    CB_Procs* async CB__DEFAULT(nullptr);
+    size_t max_procs CB__DEFAULT(0);
+    const char* stdout_path CB__DEFAULT(nullptr);
+    const char* stderr_path CB__DEFAULT(nullptr);
+} CB_Chain_End_Opt;
+
+// Remembers the fds to close at the end (a chain needs at most 3; 5 slots is plenty).
+typedef struct {
+    CB_FD items[5];
+    size_t count;
+} CB_Fd_List;
+
+// ---- declarations ----
+CBDEF bool cb_chain_begin_opt(CB_Chain* chain, CB_Chain_Begin_Opt opt);
+CBDEF bool cb_chain_cmd_opt(CB_Chain* chain, CB_Cmd* cmd, CB_Chain_Cmd_Opt opt);
+CBDEF bool cb_chain_end_opt(CB_Chain* chain, CB_Chain_End_Opt opt);
+
+#define cb_chain_begin(chain, ...) cb_chain_begin_opt((chain), CB_CLIT(CB_Chain_Begin_Opt){__VA_ARGS__})
+#define cb_chain_cmd(chain, cmd, ...) cb_chain_cmd_opt((chain), (cmd), CB_CLIT(CB_Chain_Cmd_Opt){__VA_ARGS__})
+#define cb_chain_end(chain, ...) cb_chain_end_opt((chain), CB_CLIT(CB_Chain_End_Opt){__VA_ARGS__})
+
+#ifdef CB_IMPLEMENTATION
+
 CBDEF void cb__fd_list_push(CB_Fd_List* list, CB_FD fd)
 {
     cb_fa_append(list, fd); // the list has room for every stage; a full list would leak an fd
@@ -5559,9 +5399,108 @@ defer:
     return result;
 }
 
+#endif // CB_IMPLEMENTATION
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// Build Flags
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// Defaults for the compiler abstraction used by build scripts. Every macro has its own #ifndef
+// guard, so a project can override any of them before including cb.h:
+//     #define cb_cc_flags(cmd) cb_cmd_append(cmd, "-Wall", "-Wextra", "-O2")
+//     #include "cb.h"
+//
+// The platform split follows what actually compiles on each system:
+//   macOS    neither -std=c99 nor -D_POSIX_C_SOURCE is passed: both hide symbols we need.
+//   FreeBSD  -D_POSIX_C_SOURCE hides required symbols, -std=c99 is fine.
+//   Linux    -std=c99 needs -D_POSIX_C_SOURCE=200112L, otherwise lstat/readlink/clock_gettime/
+//            nanosleep/PATH_MAX stay undeclared.
+//   MSVC     C and C++ modes take different switches (/TC vs /TP, /std:c++20) and no -I. form.
+#ifndef cb_cc
+#if defined(_WIN32) && defined(_MSC_VER)
+#define cb_cc(cmd) cb_cmd_append(cmd, "cl.exe")
+#elif defined(_WIN32) && defined(__clang__)
+#define cb_cc(cmd) cb_cmd_append(cmd, "clang")
+#elif defined(_WIN32) && defined(__TINYC__)
+#define cb_cc(cmd) cb_cmd_append(cmd, "tcc")
+#elif defined(__cplusplus)
+#define cb_cc(cmd) cb_cmd_append(cmd, "cc", "-x", "c++")
+#else
+#define cb_cc(cmd) cb_cmd_append(cmd, "cc")
+#endif
+#endif /* cb_cc */
+
+#ifndef cb_cc_flags
+#if defined(__cplusplus)
+#if defined(_MSC_VER)
+#define cb_cc_flags(cmd) cb_cmd_append(cmd, "/std:c++20", "/TP", "/W4", "/nologo", "/D_CRT_SECURE_NO_WARNINGS", "-I.")
+#else
+#define cb_cc_flags(cmd) cb_cmd_append(cmd, "-Wall", "-Wextra", "-Wno-missing-field-initializers", "-Wswitch-enum", "-ggdb", "-I.")
+#endif
+#else // !__cplusplus
+#if defined(_MSC_VER)
+#define cb_cc_flags(cmd) cb_cmd_append(cmd, "/TC", "/W4", "/nologo", "/D_CRT_SECURE_NO_WARNINGS", "-I.")
+#elif defined(__APPLE__) || defined(__MACH__)
+#define cb_cc_flags(cmd) cb_cmd_append(cmd, "-Wall", "-Wextra", "-Wswitch-enum", "-I.")
+#elif defined(__FreeBSD__)
+#define cb_cc_flags(cmd) cb_cmd_append(cmd, "-Wall", "-Wextra", "-Wswitch-enum", "-std=c99", "-ggdb", "-I.")
+#else
+#define cb_cc_flags(cmd) cb_cmd_append(cmd, "-Wall", "-Wextra", "-Wswitch-enum", "-std=c99", "-D_POSIX_C_SOURCE=200112L", "-ggdb", "-I.")
+#endif
+#endif // __cplusplus
+#endif /* cb_cc_flags */
+
+#ifndef cb_cc_output
+#if defined(_MSC_VER) && !defined(__clang__)
+#define cb_cc_output(cmd, output_path) cb_cmd_append(cmd, cb_temp_sprintf("/Fe:%s", (output_path)), cb_temp_sprintf("/Fo:%s", (output_path)))
+#else
+#define cb_cc_output(cmd, output_path) cb_cmd_append(cmd, "-o", (output_path))
+#endif
+#endif /* cb_cc_output */
+
+#ifndef cb_cc_inputs
+#define cb_cc_inputs(cmd, ...) cb_cmd_append(cmd, __VA_ARGS__)
+#endif /* cb_cc_inputs */
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // C Builder
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+#ifndef CB_REBUILD_URSELF
+#if defined(_WIN32)
+#if defined(__clang__)
+#if defined(__cplusplus)
+#define CB_REBUILD_URSELF(binary_path, source_path) "clang", "-x", "c++", "-o", binary_path, source_path
+#else
+#define CB_REBUILD_URSELF(binary_path, source_path) "clang", "-x", "c", "-o", binary_path, source_path
+#endif
+#elif defined(__GNUC__)
+#if defined(__cplusplus)
+#define CB_REBUILD_URSELF(binary_path, source_path) "gcc", "-x", "c++", "-o", binary_path, source_path
+#else
+#define CB_REBUILD_URSELF(binary_path, source_path) "gcc", "-x", "c", "-o", binary_path, source_path
+#endif
+#elif defined(_MSC_VER)
+#define CB_REBUILD_URSELF(binary_path, source_path) "cl.exe", cb_temp_sprintf("/Fe:%s", (binary_path)), source_path
+#elif defined(__TINYC__)
+#define CB_REBUILD_URSELF(binary_path, source_path) "tcc", "-o", binary_path, source_path
+#endif
+#else
+#if defined(__cplusplus)
+#define CB_REBUILD_URSELF(binary_path, source_path) "cc", "-x", "c++", "-o", binary_path, source_path
+#else
+#define CB_REBUILD_URSELF(binary_path, source_path) "cc", "-x", "c", "-o", binary_path, source_path
+#endif
+#endif
+#endif
+
+// Compiler command line used to rebuild this build script; redefine it to bootstrap differently.
+CBDEF int cb_needs_rebuild(const char* binary_path, const char** source_paths, size_t source_paths_count);
+CBDEF void cb__self_rebuild(int argc, char** argv, const char* source_path, ...);
+// Call once at the top of main(): rebuild this program and re-run it when the program itself or any
+// listed source file is newer than the binary. C99 needs at least one listed source path:
+//     CB_SELF_REBUILD(argc, argv, "cb.h");
+#define CB_SELF_REBUILD(argc, argv, ...) cb__self_rebuild(argc, argv, __FILE__, __VA_ARGS__, NULL)
+
+#ifdef CB_IMPLEMENTATION
 
 CBDEF int cb_needs_rebuild(const char* binary_path, const char** source_paths, size_t source_paths_count)
 {
@@ -5681,13 +5620,10 @@ CBDEF void cb__self_rebuild(int argc, char** argv, const char* source_path, ...)
     if (!cb_cmd_run_opt(&cmd, opt)) exit(1);
     exit(0);
 }
-#ifndef cb_cc_flags
-#if defined(__cplusplus)
-#else // __cplusplus
-#endif // __cplusplus
-#endif // !cb_cc_flags
 
-#endif /* CB_IMPLEMENTATION */
+#endif // CB_IMPLEMENTATION
+
+#endif /* CB_H_ */
 
 // >>> CB_STRIP_PREFIX
 ////////////////////////////////////////////////////////////////////////////////////////////////////
