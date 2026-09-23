@@ -51,6 +51,7 @@ int main(void)
         sb_append_cstr(&sb, "hello");
         sb_append(&sb, ' ');
         sb_append_cstr(&sb, "world");
+        sb_append_null(&sb);
 
         printf("String_Builder 可用: count = %zu, items = |%s|\n", sb.count, sb.items);
         sb_free(sb);
@@ -131,6 +132,7 @@ int main(void)
 
         String_Builder rb = ZERO;
         int read_ok = (int)read_entire_file("strip_work/a/b/f.txt", &rb);
+        if (read_ok) sb_append_null(&rb);
         printf("read_entire_file 可用 = %d, 读回内容 = |%s|, 与写入一致 = %d\n", read_ok,
                read_ok ? rb.items : "", (int)(read_ok && strcmp(rb.items, content) == 0));
         sb_free(rb);

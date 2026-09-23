@@ -42,8 +42,9 @@ export LIBGL_ALWAYS_SOFTWARE=1
 export WINEPREFIX="$EXPORT_PREFIX"
 
 # 与 cb.c 里的 test_names[] 保持一致
-ALL_TESTS=(arena bytes_for_utf8 chain dynamic_array error_paths fs map nob_parity
-           read_entire_dir stdlib string_builder string_view strip_prefix temp_storage toolbox)
+ALL_TESTS=(alloc_track arena build_flags bytes_for_utf8 chain dynamic_array error_paths fs
+           logging map nob_parity procs read_entire_dir stdlib string_builder string_view
+           strip_prefix temp_storage toolbox)
 
 RECORD=0
 if [ "${1:-}" = "--record" ]; then
@@ -116,7 +117,9 @@ for name in "${TESTS[@]}"; do
         echo "   ok   $name"
     else
         echo "   FAIL $name（与 $golden 不一致）"
-        diff "$BUILD_DIR/$name.out" "$golden" | head -8
+        # `|| true`：diff 在文件不同时返回 1，set -e + pipefail 会让脚本
+        # 在第一个失败处就退出，后面的失败就全看不到了。
+        diff "$BUILD_DIR/$name.out" "$golden" | head -8 || true
         failed=$((failed + 1))
     fi
 done

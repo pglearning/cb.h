@@ -31,6 +31,32 @@ cb_duration_to_str(185) = 3m5s
 cb_duration_to_str(7325) = 2h2m
 cb_duration_to_str(-5) = 0ms
 
+== 计时器 ==
+CB_NANOS_PER_SEC = 1000000000, CB_TIMER_MAX_DEPTH = 64, cb_timer.stack 容量 = 64
+cb_get_time_ms() > 0 = 1, 连续两次不减 = 1
+cb_get_time_us() > 0 = 1, 连续两次不减 = 1
+cb_get_time_us()/1000 落在两次 cb_get_time_ms() 之间 = 1
+cb_timer_reset 初始状态: stats_count = 0, sp = 0
+CB_TIMER_START 之后 sp = 1, 栈顶 name = phase
+CB_TIMER_END 返回的耗时 >= 0 = 1, 之后 sp = 0
+嵌套两层: sp = 2, stack[0].name = outer, stack[1].name = inner
+cb_timer_end 返回内层/外层 >= 0 = 1 1, 嵌套结束后 sp = 0
+CB_Timer_Frame: name 匹配 = 1, start 是有效时间戳 = 1
+cb_timer_end_stat 第 1 次返回的耗时 >= 0 = 1
+cb_timer_end_stat 第 2 次返回的耗时 >= 0 = 1
+cb_timer_end_stat 第 3 次返回的耗时 >= 0 = 1
+cb_timer_get_stat("loop"): name = loop, count = 3, min <= max = 1, min >= 0 = 1
+同名再取一次是同一指针 = 1, stats_count 不变 = 1
+cb_timer_get_stat 新名字会建条目: count = 0, total = 0, stats_count = 2
+cb_timer_end_print 已执行（输出在 stderr），之后 sp = 0
+fopen("timer_stats.txt") 成功 = 1
+cb_timer_fprint_stats(NULL) 已执行 = 1
+统计表文件: 非空 = 1, 含 "loop" = 1, 含 "Count" 表头 = 1
+cb_read_entire_file 返回 = 1
+cb_delete_file 之后文件仍存在 = 0
+cb_timer_print_stats 已执行（输出在 stderr） = 1
+cb_timer_reset 之后: stats_count = 0, sp = 0, 表指针不变 = 1, 表仍分配 = 1
+
 == 随机数 ==
 同种子 100 次序列全同 = 1
 不同种子首次输出不同 = 1
@@ -68,3 +94,11 @@ cb_args_positional_count() = 3
 cb_args_positional(99) == NULL = 1
 cb_args_free 之后: options.items == NULL = 1, positionals.items == NULL = 1
 空命令行: positional_count = 0, has("x") = 0
+
+== 通用宏 ==
+cb_swap(int, 1, 2) 之后 left = 2, right = 1
+cb_swap(const char*, "alpha", "beta") 之后 = beta alpha
+cb_shift 取到 "prog", 之后 count = 2, *ptr = first
+CB_ARRAY_GET(values, 1) = 20, CB_ARRAY_LEN(values) = 3
+CB_LINE_END 以 '\n' 结尾 = 1, 长度是 1 或 2 = 1
+CB_PROCESS_ID() > 0 = 1, 两次调用相同 = 1

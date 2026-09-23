@@ -1,1 +1,2 @@
+CB_Fd_List（chain 的 fd 暂存表）: count = 0
 chain 的行为用例需要 POSIX 工具（sh/tr/cat/sort），Windows 下跳过

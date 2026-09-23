@@ -244,6 +244,49 @@ static void test_mmap(void)
     cb_mmap_close(&missing);
 }
 
+static void test_copy_directory(void)
+{
+    printf("\n== 递归复制目录 ==\n");
+
+    printf("建 cp_src/a -> %d\n", (int)cb_mkdir_if_not_exists("cp_src/a"));
+    printf("建 cp_src/b -> %d\n", (int)cb_mkdir_if_not_exists("cp_src/b"));
+    printf("写 cp_src/a/f.txt -> %d\n", (int)cb_write_entire_file("cp_src/a/f.txt", "alpha", 5));
+    printf("写 cp_src/b/g.txt -> %d\n", (int)cb_write_entire_file("cp_src/b/g.txt", "beta", 4));
+    printf("写 cp_src/root.txt -> %d\n", (int)cb_write_entire_file("cp_src/root.txt", "root", 4));
+
+    printf("cb_copy_directory_recursively(\"cp_src\", \"cp_dst\") -> %d\n",
+           (int)cb_copy_directory_recursively("cp_src", "cp_dst"));
+
+    printf("目标目录已建（cp_dst 是目录）= %d\n", (int)(cb_get_file_type("cp_dst") == CB_FILE_DIRECTORY));
+    printf("子目录也被复制（cp_dst/a、cp_dst/b 都是目录）= %d/%d\n",
+           (int)(cb_get_file_type("cp_dst/a") == CB_FILE_DIRECTORY),
+           (int)(cb_get_file_type("cp_dst/b") == CB_FILE_DIRECTORY));
+
+    CB_String_Builder sb = CB_ZERO;
+    printf("读回 cp_dst/a/f.txt -> %d\n", (int)cb_read_entire_file("cp_dst/a/f.txt", &sb));
+    printf("内容 = |%.*s|（%zu 字节，期望 alpha）\n", (int)sb.count, sb.items != NULL ? sb.items : "", sb.count);
+    sb.count = 0;
+    printf("读回 cp_dst/b/g.txt -> %d\n", (int)cb_read_entire_file("cp_dst/b/g.txt", &sb));
+    printf("内容 = |%.*s|（%zu 字节，期望 beta）\n", (int)sb.count, sb.items != NULL ? sb.items : "", sb.count);
+    sb.count = 0;
+    printf("读回 cp_dst/root.txt -> %d\n", (int)cb_read_entire_file("cp_dst/root.txt", &sb));
+    printf("内容 = |%.*s|（%zu 字节，期望 root）\n", (int)sb.count, sb.items != NULL ? sb.items : "", sb.count);
+    printf("三个文件大小与源一致 = %d/%d/%d\n",
+           (int)(cb_file_size("cp_dst/a/f.txt") == cb_file_size("cp_src/a/f.txt")),
+           (int)(cb_file_size("cp_dst/b/g.txt") == cb_file_size("cp_src/b/g.txt")),
+           (int)(cb_file_size("cp_dst/root.txt") == cb_file_size("cp_src/root.txt")));
+    cb_sb_free(sb);
+
+    bool copied_missing = cb_copy_directory_recursively("no-such-src", "cp_dst2");
+    printf("复制不存在的源 -> %d，目标未被创建 = %d\n", (int)copied_missing,
+           (int)(cb_file_exists("cp_dst2") == 0));
+
+    printf("递归删除 cp_src -> %d\n", (int)cb_delete_directory_recursively("cp_src"));
+    printf("递归删除 cp_dst -> %d\n", (int)cb_delete_directory_recursively("cp_dst"));
+    printf("源与副本都已消失 = %d/%d\n", (int)(cb_file_exists("cp_src") == 0),
+           (int)(cb_file_exists("cp_dst") == 0));
+}
+
 int main(void)
 {
     test_meta();
@@ -254,6 +297,7 @@ int main(void)
     test_glob_match();
     test_glob();
     test_mmap();
+    test_copy_directory();
 
     return 0;
 }

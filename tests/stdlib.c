@@ -28,6 +28,7 @@ static void test_da(void)
     {
         cb_sb_append_cstr(&rev, *it);
     }
+    cb_sb_append_null(&rev);
     printf("foreach_rev -> %s\n", rev.items);
     cb_sb_free(rev);
 
@@ -147,6 +148,9 @@ static int cmp_pair_key(const void* a, const void* b)
 static void test_sort(void)
 {
     printf("\n== Sort ==\n");
+
+    CB_Compare_Func sorter = cmp_int; // 排序 API 的比较函数类型
+    printf("CB_Compare_Func 变量可用于 da_sort = %d\n", (int)(sorter != NULL));
 
     int nums[] = {5, 3, 9, 1, 7, 3};
     IntArray ia = CB_ZERO;
@@ -306,6 +310,7 @@ static void test_split_join(void)
 
     CB_String_Builder sb = CB_ZERO;
     cb_sb_append_join(&sb, parts, count, cb_sv_from_cstr("|"));
+    cb_sb_append_null(&sb);
     printf("join(\"|\") = %s\n", sb.items);
     cb_sb_free(sb);
 }
@@ -418,6 +423,74 @@ static void test_path(void)
     printf("path_absolute(\"/a/../b\") = %s\n", cb_path_absolute("/a/../b"));
 }
 
+// 路径名/临时名工具。cb_get_current_dir_temp 与 cb_temp_running_executable_path 返回的是
+// 机器相关的绝对路径，所以只打印与机器无关的结论（是否绝对路径、basename）。
+static void test_path_extras(void)
+{
+    printf("\n== 路径名与临时名工具 ==\n");
+
+    printf("CB_PATH_SEP = %c，cb_path_is_sep(CB_PATH_SEP) = %d\n", CB_PATH_SEP,
+           (int)cb_path_is_sep(CB_PATH_SEP));
+    printf("cb_path_is_sep('/') = %d，cb_path_is_sep('\\\\') = %d（Windows 下两个都是分隔符）\n",
+           (int)cb_path_is_sep('/'), (int)cb_path_is_sep('\\'));
+    printf("cb_path_is_sep('x') = %d，cb_path_is_sep('\\0') = %d\n", (int)cb_path_is_sep('x'),
+           (int)cb_path_is_sep('\0'));
+
+    printf("cb_path_name(\"a/b/c.txt\") = %s\n", cb_path_name("a/b/c.txt"));
+    printf("cb_path_name(\"c.txt\") = %s\n", cb_path_name("c.txt"));
+    printf("cb_path_name(\"/x/y/\") = |%s|（结尾的分隔符后面没有名字）\n", cb_path_name("/x/y/"));
+
+    printf("cb_temp_dir_name(\"a/b/c.txt\") = %s\n", cb_temp_dir_name("a/b/c.txt"));
+    printf("cb_temp_dir_name(\"c.txt\") = %s\n", cb_temp_dir_name("c.txt"));
+    printf("cb_temp_dir_name(\"\") = %s\n", cb_temp_dir_name(""));
+
+    printf("cb_temp_file_name(\"a/b/c.txt\") = %s\n", cb_temp_file_name("a/b/c.txt"));
+    printf("cb_temp_file_name(\"c.txt\") = %s\n", cb_temp_file_name("c.txt"));
+    printf("cb_temp_file_name(\"/x/y/\") = |%s|\n", cb_temp_file_name("/x/y/"));
+
+    {
+        char* ext = cb_temp_file_ext("a/b/c.txt");
+        char* last_ext = cb_temp_file_ext("archive.tar.gz");
+        printf("cb_temp_file_ext(\"a/b/c.txt\") = %s\n", ext != NULL ? ext : "(NULL)");
+        printf("cb_temp_file_ext(\"archive.tar.gz\") = %s（只取最后一个点之后）\n",
+               last_ext != NULL ? last_ext : "(NULL)");
+    }
+    {
+        char* no_ext = cb_temp_file_ext("a/b/noext");
+        printf("cb_temp_file_ext(\"a/b/noext\") 非空 = %d\n", (int)(no_ext != NULL && no_ext[0] != '\0'));
+    }
+
+    const char* cwd = cb_get_current_dir_temp();
+    printf("cb_get_current_dir_temp() 是绝对路径 = %d，当前目录存在 = %d\n",
+           (int)cb_path_is_absolute(cwd), (int)(cb_file_exists(cwd) != 0));
+
+    const char* exe = cb_temp_running_executable_path();
+    const char* exe_base = cb_temp_file_name(exe);
+    printf("cb_temp_running_executable_path() 的 basename = %s（不打印绝对路径）\n", exe_base);
+    printf("basename 以 \"stdlib\" 开头 = %d\n",
+           (int)cb_sv_starts_with_cstr(cb_sv_from_cstr(exe_base), "stdlib"));
+}
+
+// CB_Arg_Entry / CB_Arg_List 是 CB_Args 内部的两个结构；CB_DECLTYPE_CAST 在 C 下是空宏，
+// 在 C++ 下补一个 decltype 转换，让 malloc/realloc 的返回值能赋给具体指针类型。
+static void test_types_and_decltype_cast(void)
+{
+    printf("\n== 辅助类型与 CB_DECLTYPE_CAST ==\n");
+
+    CB_Arg_Entry option = CB_ZERO;
+    option.name = "verbose";
+    option.value = NULL;
+    CB_Arg_List options = CB_ZERO;
+    printf("CB_Arg_Entry: name = %s, value = %s\n", option.name, option.value == NULL ? "(switch)" : option.value);
+    printf("CB_Arg_List（CB_Args.options 的类型）: count = %zu\n", options.count);
+
+    int* heap_int = NULL;
+    heap_int = CB_DECLTYPE_CAST(heap_int) malloc(sizeof(int)); // C: 空宏；C++: (decltype(heap_int))
+    *heap_int = 42;
+    printf("CB_DECLTYPE_CAST(heap_int) malloc(sizeof(int)) -> %d\n", *heap_int);
+    free(heap_int);
+}
+
 int main(void)
 {
     test_da();
@@ -430,6 +503,8 @@ int main(void)
     test_chop_by_delim_r();
     test_utf8();
     test_path();
+    test_path_extras();
+    test_types_and_decltype_cast();
 
     return 0;
 }

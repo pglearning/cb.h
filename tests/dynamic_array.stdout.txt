@@ -2,3 +2,12 @@ b
 a
 a
 |last index = 2|
+
+== cb_da_reserve / cb_da_resize / cb_fa_append ==
+cb_da_reserve(3): count = 0, capacity >= 3 = 1, items 已分配 = 1
+cb_da_reserve(1) 保持已有容量 = 1
+cb_da_resize(1 -> 4): count = 4, capacity >= 4 = 1
+cb_da_resize 放大的新槽位可按下标写入 = two four
+cb_da_resize(4 -> 2): count = 2, 保留的前两个元素 = one two
+cb_da_resize(2 -> 0): count = 0, 内存仍保留 = 1
+cb_fa_append x3: count = 3, items[1] = fa-1, 容量固定为 4

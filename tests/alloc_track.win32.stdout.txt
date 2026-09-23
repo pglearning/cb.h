@@ -1,0 +1,56 @@
+== CB_ALLOC_TRACK: every allocation goes through the tracking layer ==
+before anything: cb_alloc_live_count() = 0, cb_alloc_live_size() = 0, peak = 0, total_count = 0
+cb__alloc_head == NULL -> 1
+
+== cb__tracked_realloc / cb__tracked_free: what CB_REALLOC/CB_FREE expand to ==
+cb__tracked_realloc(NULL, 64, "alloc_demo.c", 11) -> non-NULL = 1
+cb_alloc_live_count() = 1, cb_alloc_live_size() = 64
+cb__alloc_live_count = 1, cb__alloc_live_size = 64, cb__alloc_peak_size = 64, cb__alloc_total_count = 1
+cb__alloc_head points at a CB__Alloc_Record: ->size = 64, ->file = alloc_demo.c, ->line = 11, ->prev == NULL = 1
+the returned pointer is the header plus sizeof(CB__Alloc_Record) -> 1
+cb__tracked_free(block, "alloc_demo.c", 12) -> cb_alloc_live_count() = 0, cb_alloc_live_size() = 0
+peak stays 64; cb__alloc_head == NULL -> 1
+
+== CB_REALLOC / CB_FREE (the __FILE__/__LINE__ form) ==
+CB_REALLOC(NULL, 100) -> non-NULL = 1, live_count = 1, live_size = 100
+CB_REALLOC(p, 300) -> non-NULL = 1, live_count = 1, live_size = 300 (grown in place or moved)
+peak = 300, cb__alloc_head->size = 300 (the record tracks the new size)
+CB_FREE(p) -> live_count = 0, live_size = 0, peak stays 300, total_count = 3
+CB_REALLOC(NULL, 0) -> non-NULL = 1, live_size = 1 (a 0-byte request is stored as 1)
+CB_REALLOC(zero, 0) -> returned NULL = 1 and freed the block: live_count = 0, live_size = 0
+
+== CB_REALLOC_RAW / CB_FREE_RAW: the untracked bottom layer ==
+CB_REALLOC_RAW(NULL, 32) -> non-NULL = 1
+live_count = 0 (unchanged = 1), live_size = 0 (unchanged = 1), total_count = 4 (unchanged = 1)
+CB_FREE_RAW(raw) -> live_count = 0, live_size = 0
+
+== cb_alloc_report (stderr captured) ==
+cb__tracked_realloc(NULL, 48, "alloc_demo.c", 77) -> non-NULL = 1, live_count = 1
+cb_alloc_report() wrote to stderr:
+  | === cb alloc report ===
+  | live : 1 blocks, 48 bytes
+  | peak : 300 bytes, 5 allocations total
+  |   LEAK 48 bytes from alloc_demo.c:77
+  -> 4 line(s)
+cb__tracked_free(leak, "alloc_demo.c", 78) -> live_count = 0, live_size = 0
+
+== containers allocate through the tracked layer ==
+cb_da_append(&da, "seven") -> count = 1, capacity = 256, items[0] = seven
+live_count 0 -> 1 (the first reserve allocates the whole capacity at once)
+live_size delta == capacity * sizeof(*da.items) -> 1
+peak before the containers = 300, raised by the container allocation -> 1
+cb_da_free(da) -> live_count = 0, live_size = 0
+cb_map_put_cstr(&m, "key", &value) -> count = 1, capacity = 16
+live_count 0 -> 2 (one block for the slots, one for the copied key)
+live_size delta == capacity * sizeof(m.slots[0]) + strlen("key") + 1 -> 1
+cb_map_free(&m) -> live_count = 0, live_size = 0
+
+== cb_alloc_check, a custom CB_OOM and cb__oom ==
+cb_alloc_check(non-NULL, 16) -> returned normally, live_count = 1, live_size = 16
+cb__tracked_free(checked, "alloc_demo.c", 92) -> live_count = 0, live_size = 0
+cb_alloc_check(NULL, 64) -> CB_OOM(64) -> test_oom_handler: skipped on this platform (no fork())
+cb__oom(1 GiB, "alloc_demo.c", 9), the default CB_OOM target: skipped on this platform (no fork())
+
+== final state: every block released ==
+cb_alloc_live_count() = 0, cb_alloc_live_size() = 0, total_count = 9
+cb__alloc_head == NULL -> 1

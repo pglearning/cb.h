@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 #
-# 示例检查脚本：编译并真正运行 examples/ 下的每一个示例
+# 示例检查脚本：编译并真正运行 examples/ 下的每个构建脚本
 #
 # 用途：CI 的 examples 步骤是唯一会运行示例的地方，本地没有等价命令——"
-# 本地只跑 ./cb test"就漏掉了示例里写错的路径、命令行和链接顺序。
+# 本地只跑 ./cb test"就漏掉了构建脚本里写错的路径、命令行和链接顺序。
+# 示例现在是纯构建脚本：它们会 walk 演示项目、调用编译器、把产物写进 bin/，
+# 所以"跑得起来"本身就是对 walk_dir / Cmd / 构建 API 的端到端验证。
 #
 # 用法：
 #     tools/verify-examples.sh                        # 两遍：默认链接、模拟 CI 的 --as-needed
@@ -18,14 +20,13 @@
 # 为什么必须跑两遍
 # ----------------
 # Ubuntu 的 gcc/clang 默认带 --as-needed，本地编译器（自建 gcc / 发行版 clang）通常不带。
-# 于是"库排在源码前面"这类错误在本地 11/11 全过、到 CI 三个 job 一起挂：链接器处理到
-# 那个库时还没有任何未定义符号，直接把库丢掉，随后在源码处报 undefined reference。
-# 第二遍用一个只加 -Wl,--as-needed 的 cc 垫片放在 PATH 最前面，把这层默认差异在本地
-# 复现出来（cb_cc 发出的是裸 "cc"，所以垫片能被示例内部的构建步骤用到）。
+# 于是"库排在源码前面"这类错误在本地全过、到 CI 一起挂：链接器处理到那个库时还没有任何
+# 未定义符号，直接把库丢掉，随后在源码处报 undefined reference。多项目示例正是靠链接
+# ./bin/core.so 才暴露这一类问题。
+# 第二遍用一个再加 -Wl,--as-needed 的 cc 垫片放在 PATH 最前面，把这层默认差异复现出来
+# （cb.h 发出的是裸 "cc"，所以垫片对示例内部的构建步骤同样生效）。
 #
-# 关于 08_memory：它自己 #define CB_ALLOC_TRACK，不需要外部传宏。
-# 关于 temp storage：cb.h 的 temp 是 _Thread_local、生命周期到进程结束，故意不释放；
-# 内存是否干净由 tools/verify-sanitizers.sh --examples 负责，本脚本只管"跑得起来"。
+# 两遍都会先删掉示例产物 bin/：构建脚本有 needs_rebuild 判断，不删就等于第二遍什么都没做。
 
 set -euo pipefail
 
@@ -42,6 +43,16 @@ case "$CB_LANG" in
     c++|cpp|cxx)    LANG_FLAGS=(-x c++ -std=c++20) ;;
     *)              echo "CB_LANG 只支持 c 或 c++（现在是 '$CB_LANG'）" >&2; exit 2 ;;
 esac
+
+# examples/ 自带一份 cb.h，这样整个目录被单独复制走也能编译（软链接在 Windows 上会退化成
+# 文本文件，cp -r 复制后还会变成悬空链接）。这里守住"两份必须一致"：改了根目录的 cb.h 就得
+# 同步复制过去，否则示例跑的是旧头文件，而 CI 会在这里直接失败。
+if ! cmp -s cb.h examples/cb.h; then
+    echo "FAIL examples/cb.h 与根目录 cb.h 不一致" >&2
+    echo "     修法：cp cb.h examples/cb.h" >&2
+    exit 1
+fi
+echo "== examples/cb.h 与 cb.h 一致 =="
 
 echo "== 编译器 =="
 $CC --version | head -1
@@ -71,7 +82,8 @@ run_pass() {
     echo "== $label =="
     for src in examples/*.c; do
         name=$(basename "$src" .c)
-        rm -rf "build/examples/$name"
+        # 示例产物都落在仓库根的 bin/：删掉它，needs_rebuild 才会真的重新编译+链接
+        rm -rf bin
 
         if ! out=$(PATH="$path_prefix$PATH" $CC "${LANG_FLAGS[@]}" \
                        -Wall -Wextra -I. "$src" -o "$BUILD_DIR/$name" 2>&1); then

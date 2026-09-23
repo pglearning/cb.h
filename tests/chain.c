@@ -83,6 +83,7 @@ static void test_chain_err2out(void)
     CB_String_Builder sb = CB_ZERO;
     printf("读回 out3.txt -> %d\n", (int)cb_read_entire_file("out3.txt", &sb));
     printf("out3.txt 内容（%zu 字节）= |%.*s|\n", sb.count, (int)sb.count, sb.items != NULL ? sb.items : "");
+    cb_sb_append_null(&sb);
     const char* text = sb.items != NULL ? sb.items : "";
     printf("含 OUT = %d, 含 ERR = %d（期望 OUT 与 ERR 一起出现在 stdout 文件里）\n",
            (int)(strstr(text, "OUT") != NULL), (int)(strstr(text, "ERR") != NULL));
@@ -121,8 +122,62 @@ static void test_chain_dont_reset(void)
     cb_cmd_free(cmd);
 }
 
+// 便捷宏 cb_chain_begin/cb_chain_cmd/cb_chain_end 只是把 CB_CLIT(CB_Chain_*_Opt){...} 传下去，
+// 这一节直接构造这三个结构体并调用 _opt 版本，覆盖宏背后的真实入口。
+static void test_chain_opt_functions(void)
+{
+    printf("\n== 直接调用 cb_chain_*_opt（不经便捷宏）==\n");
+
+    const char* content = "delta\nbravo\ncharlie\n";
+    printf("写 opt_in.txt -> %d\n", (int)cb_write_entire_file("opt_in.txt", content, strlen(content)));
+
+    CB_Chain chain = CB_ZERO;
+    CB_Cmd cmd = CB_ZERO;
+
+    CB_Chain_Begin_Opt begin_opt = CB_ZERO;
+    begin_opt.stdin_path = "opt_in.txt";
+    printf("cb_chain_begin_opt(.stdin_path = \"opt_in.txt\") -> %d\n",
+           (int)cb_chain_begin_opt(&chain, begin_opt));
+
+    CB_Chain_Cmd_Opt cmd_opt = CB_ZERO;
+    cmd_opt.dont_reset = true; // 保留 cmd.count，方便复用同一条命令
+    cb_cmd_append(&cmd, "tr", "a-z", "A-Z");
+    bool stage1 = cb_chain_cmd_opt(&chain, &cmd, cmd_opt);
+    printf("cb_chain_cmd_opt #1（.dont_reset = true）-> %d\n", (int)stage1);
+    printf("dont_reset 时 cmd.count 保留 = %zu\n", cmd.count);
+
+    printf("cb_chain_cmd_opt #2（复用同一个 cmd）-> %d\n", (int)cb_chain_cmd_opt(&chain, &cmd, cmd_opt));
+
+    CB_Cmd last = CB_ZERO;
+    CB_Chain_Cmd_Opt last_opt = CB_ZERO;
+    last_opt.err2out = true;
+    cb_cmd_append(&last, "sh", "-c", "cat; echo OPT-ERR 1>&2");
+    printf("cb_chain_cmd_opt #3（.err2out = true）-> %d\n", (int)cb_chain_cmd_opt(&chain, &last, last_opt));
+
+    CB_Chain_End_Opt end_opt = CB_ZERO;
+    end_opt.stdout_path = "opt_out.txt";
+    end_opt.stderr_path = "opt_err.txt";
+    printf("cb_chain_end_opt(.stdout_path/.stderr_path) -> %d\n", (int)cb_chain_end_opt(&chain, end_opt));
+
+    CB_String_Builder sb = CB_ZERO;
+    printf("读回 opt_out.txt -> %d\n", (int)cb_read_entire_file("opt_out.txt", &sb));
+    printf("opt_out.txt 内容（%zu 字节）= |%.*s|\n", sb.count, (int)sb.count, sb.items != NULL ? sb.items : "");
+    cb_sb_free(sb);
+
+    printf("cb_file_exists(opt_err.txt) = %d，大小 = %zu（err2out 已把 stderr 并进 stdout，stderr 文件按语义留空）\n",
+           (int)cb_file_exists("opt_err.txt"), cb_file_size("opt_err.txt"));
+
+    cb_da_free(chain.cmd);
+    cb_cmd_free(cmd);
+    cb_cmd_free(last);
+}
+
 int main(void)
 {
+    // CB_Fd_List：chain 内部用来记住"命令跑完要关掉哪些 fd"的类型。
+    CB_Fd_List fds = CB_ZERO;
+    printf("CB_Fd_List（chain 的 fd 暂存表）: count = %zu\n", fds.count);
+
 #ifdef _WIN32
 
     printf("chain 的行为用例需要 POSIX 工具（sh/tr/cat/sort），Windows 下跳过\n");
@@ -132,5 +187,6 @@ int main(void)
     test_chain_stdin_file();
     test_chain_err2out();
     test_chain_dont_reset();
+    test_chain_opt_functions();
     return 0;
 }

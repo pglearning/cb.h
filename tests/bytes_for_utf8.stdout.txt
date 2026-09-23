@@ -14,3 +14,24 @@
 你 => 3
 好 => 3
 count = 15
+
+== cb_sv_utf8_len ==
+П => 表值 2, 剩余 cb_sv_utf8_len = 14
+р => 表值 2, 剩余 cb_sv_utf8_len = 13
+и => 表值 2, 剩余 cb_sv_utf8_len = 12
+в => 表值 2, 剩余 cb_sv_utf8_len = 11
+е => 表值 2, 剩余 cb_sv_utf8_len = 10
+т => 表值 2, 剩余 cb_sv_utf8_len = 9
+, => 表值 1, 剩余 cb_sv_utf8_len = 8
+  => 表值 1, 剩余 cb_sv_utf8_len = 7
+М => 表值 2, 剩余 cb_sv_utf8_len = 6
+и => 表值 2, 剩余 cb_sv_utf8_len = 5
+р => 表值 2, 剩余 cb_sv_utf8_len = 4
+! => 表值 1, 剩余 cb_sv_utf8_len = 3
+  => 表值 1, 剩余 cb_sv_utf8_len = 2
+你 => 表值 3, 剩余 cb_sv_utf8_len = 1
+好 => 表值 3, 剩余 cb_sv_utf8_len = 0
+cb_sv_utf8_len(完整串) = 15, 手写循环 count = 15, byte 数 = 28, bytes_overrun = 0
+cb_sv_utf8_len(截断的 3 字节序列, byte 数 = 1) = 1, bytes_overrun = 2
+cb_sv_utf8_len(截断串, NULL) = 1
+cb_sv_utf8_len(空 view) = 0, bytes_overrun = 0

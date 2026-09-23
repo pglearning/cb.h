@@ -83,3 +83,24 @@ close 清空句柄 = 1
 打开不存在的文件 -> 0
 同一个句柄可以重新打开 -> 1
 重新打开的映射长度 = 30
+
+== 递归复制目录 ==
+建 cp_src/a -> 1
+建 cp_src/b -> 1
+写 cp_src/a/f.txt -> 1
+写 cp_src/b/g.txt -> 1
+写 cp_src/root.txt -> 1
+cb_copy_directory_recursively("cp_src", "cp_dst") -> 1
+目标目录已建（cp_dst 是目录）= 1
+子目录也被复制（cp_dst/a、cp_dst/b 都是目录）= 1/1
+读回 cp_dst/a/f.txt -> 1
+内容 = |alpha|（5 字节，期望 alpha）
+读回 cp_dst/b/g.txt -> 1
+内容 = |beta|（4 字节，期望 beta）
+读回 cp_dst/root.txt -> 1
+内容 = |root|（4 字节，期望 root）
+三个文件大小与源一致 = 1/1/1
+复制不存在的源 -> 0，目标未被创建 = 1
+递归删除 cp_src -> 1
+递归删除 cp_dst -> 1
+源与副本都已消失 = 1/1

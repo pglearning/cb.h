@@ -11,3 +11,18 @@ arena_strndup("abcdef", 3) = abc
 temp 回滚后复用同一块存储 = 1
 temp 内容 = temp-string
 arena_free 后 begin/end 均为 NULL = 1
+
+== arena_realloc / arena_strdup / vsprintf 形式 ==
+arena_realloc(8 -> 64) 非空且复制了旧内容 = 1
+arena_realloc(8 -> 64) 返回了新地址（arena 不能原地增长） = 1
+arena_realloc(64 -> 16) 缩小直接返回原指针 = 1
+arena_realloc(NULL, 0, 32) 新分配且非空 = 1
+arena_strdup("arena-strdup") = arena-strdup
+arena_strdup 是独立副本（与原串地址不同） = 1
+arena_vsprintf("vsprintf:%d/%s", 7, "seven") = vsprintf:7/seven
+temp_vsprintf("temp_vsprintf:%d/%s", 9, "nine") = temp_vsprintf:9/nine
+CB_Arena_Region: begin 非空 = 1, capacity 非零 = 1, count <= capacity = 1
+首个 region 的 data 区间包含第一块分配 = 1
+小分配仍在首个 region 内（begin == end） = 1
+4MB 分配非空 = 1, 之后 region 链 begin->next 非空 = 1, end == begin->next = 1
+region 链已释放（begin/end 均为 NULL） = 1

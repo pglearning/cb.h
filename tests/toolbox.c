@@ -65,6 +65,162 @@ static void test_time(void)
     printf("cb_duration_to_str(-5) = %s\n", cb_duration_to_str(-5));
 }
 
+static void test_timer(void)
+{
+    printf("\n== 计时器 ==\n");
+
+    printf("CB_NANOS_PER_SEC = %llu, CB_TIMER_MAX_DEPTH = %d, cb_timer.stack 容量 = %zu\n",
+           (unsigned long long)CB_NANOS_PER_SEC, (int)CB_TIMER_MAX_DEPTH,
+           (size_t)CB_ARRAY_LEN(cb_timer.stack));
+
+    // cb_get_time_ms / cb_get_time_us 读的是同一把单调时钟：只断言"有值"、"不减"和两者同源，
+    // 绝不打印时间本身，否则 golden 无法跨平台、跨运行字节一致。
+    double ms_first = cb_get_time_ms();
+    double ms_second = cb_get_time_ms();
+    double us_first = cb_get_time_us();
+    double us_second = cb_get_time_us();
+    printf("cb_get_time_ms() > 0 = %d, 连续两次不减 = %d\n",
+           (int)(ms_first > 0), (int)(ms_second >= ms_first));
+    printf("cb_get_time_us() > 0 = %d, 连续两次不减 = %d\n",
+           (int)(us_first > 0), (int)(us_second >= us_first));
+
+    // 同一时刻分别用两把读法取一次：us / 1000 落在 ms 的两次读数之间（容差 0.001ms 只为
+    // 吸收 double 取整），说明两者刻度兼容。
+    double ms_before = cb_get_time_ms();
+    double us_middle = cb_get_time_us();
+    double ms_after = cb_get_time_ms();
+    printf("cb_get_time_us()/1000 落在两次 cb_get_time_ms() 之间 = %d\n",
+           (int)(us_middle / 1000.0 >= ms_before - 0.001 &&
+                 us_middle / 1000.0 <= ms_after + 0.001));
+
+    cb_timer_reset();
+    printf("cb_timer_reset 初始状态: stats_count = %zu, sp = %zu\n",
+           cb_timer.stats_count, cb_timer.sp);
+
+    // CB_TIMER_START / CB_TIMER_END 就是 cb_timer_begin / cb_timer_end 的短名字。
+    CB_TIMER_START("phase");
+    printf("CB_TIMER_START 之后 sp = %zu, 栈顶 name = %s\n", cb_timer.sp, cb_timer.stack[0].name);
+    double phase_us = CB_TIMER_END();
+    printf("CB_TIMER_END 返回的耗时 >= 0 = %d, 之后 sp = %zu\n",
+           (int)(phase_us >= 0), cb_timer.sp);
+
+    // 嵌套：后进先出，CB_Timer 的 stack 保存每一层的名字和起点。
+    CB_Timer* timer = &cb_timer;
+    cb_timer_begin("outer");
+    cb_timer_begin("inner");
+    printf("嵌套两层: sp = %zu, stack[0].name = %s, stack[1].name = %s\n",
+           timer->sp, timer->stack[0].name, timer->stack[1].name);
+    double inner_us = cb_timer_end();
+    double outer_us = cb_timer_end();
+    printf("cb_timer_end 返回内层/外层 >= 0 = %d %d, 嵌套结束后 sp = %zu\n",
+           (int)(inner_us >= 0), (int)(outer_us >= 0), timer->sp);
+
+    // CB_Timer_Frame 是栈上的一帧。
+    cb_timer_begin("frame");
+    CB_Timer_Frame frame = cb_timer.stack[timer->sp - 1];
+    printf("CB_Timer_Frame: name 匹配 = %d, start 是有效时间戳 = %d\n",
+           (int)(strcmp(frame.name, "frame") == 0), (int)(frame.start >= 0));
+    (void)cb_timer_end();
+
+    // cb_timer_end_stat：结束当前测量并累加到同名 CB_Timer_Stat。
+    for (int i = 0; i < 3; ++i) {
+        cb_timer_begin("loop");
+        double iteration_us = cb_timer_end_stat();
+        printf("cb_timer_end_stat 第 %d 次返回的耗时 >= 0 = %d\n", i + 1, (int)(iteration_us >= 0));
+    }
+    CB_Timer_Stat* loop_stat = cb_timer_get_stat("loop");
+    printf("cb_timer_get_stat(\"loop\"): name = %s, count = %zu, min <= max = %d, min >= 0 = %d\n",
+           loop_stat->name, loop_stat->count, (int)(loop_stat->min <= loop_stat->max),
+           (int)(loop_stat->min >= 0));
+    size_t stats_count = cb_timer.stats_count;
+    CB_Timer_Stat* loop_stat_again = cb_timer_get_stat("loop");
+    printf("同名再取一次是同一指针 = %d, stats_count 不变 = %d\n",
+           (int)(loop_stat_again == loop_stat), (int)(cb_timer.stats_count == stats_count));
+
+    CB_Timer_Stat* empty_stat = cb_timer_get_stat("created-empty");
+    printf("cb_timer_get_stat 新名字会建条目: count = %zu, total = %.0f, stats_count = %zu\n",
+           empty_stat->count, empty_stat->total, cb_timer.stats_count);
+
+    // cb_timer_end_print 写 stderr，golden 看不到，只能断言"跑过且没有崩"。
+    cb_timer_begin("end_print");
+    cb_timer_end_print();
+    printf("cb_timer_end_print 已执行（输出在 stderr），之后 sp = %zu\n", cb_timer.sp);
+
+    // cb_timer_fprint_stats 可以写进文件：只断言文件非空、含条目名和表头，不打印内容。
+    const char* stats_path = "timer_stats.txt";
+    FILE* stats_file = fopen(stats_path, "wb");
+    printf("fopen(\"%s\") 成功 = %d\n", stats_path, (int)(stats_file != NULL));
+    if (stats_file != NULL) {
+        cb_timer_fprint_stats(stats_file);
+        fclose(stats_file);
+    }
+    cb_timer_fprint_stats(NULL); // 空指针直接返回
+    printf("cb_timer_fprint_stats(NULL) 已执行 = %d\n", 1);
+
+    CB_String_Builder stats_sb = CB_ZERO;
+    bool stats_read = cb_read_entire_file(stats_path, &stats_sb);
+    cb_sb_append_null(&stats_sb);
+    printf("统计表文件: 非空 = %d, 含 \"loop\" = %d, 含 \"Count\" 表头 = %d\n",
+           (int)(stats_sb.count > 0),
+           (int)(stats_sb.items != NULL && strstr(stats_sb.items, "loop") != NULL),
+           (int)(stats_sb.items != NULL && strstr(stats_sb.items, "Count") != NULL));
+    printf("cb_read_entire_file 返回 = %d\n", (int)stats_read);
+    cb_sb_free(stats_sb);
+    cb_delete_file(stats_path);
+    printf("cb_delete_file 之后文件仍存在 = %d\n", (int)cb_file_exists(stats_path));
+
+    // cb_timer_print_stats 是 fprint_stats(stderr) 的快捷方式。
+    cb_timer_print_stats();
+    printf("cb_timer_print_stats 已执行（输出在 stderr） = %d\n", 1);
+
+    // reset 清空统计和栈，但把已经分配的统计表留着复用。
+    CB_Timer_Stat* table_before_reset = cb_timer.stats;
+    cb_timer_reset();
+    printf("cb_timer_reset 之后: stats_count = %zu, sp = %zu, 表指针不变 = %d, 表仍分配 = %d\n",
+           cb_timer.stats_count, cb_timer.sp,
+           (int)(cb_timer.stats == table_before_reset), (int)(cb_timer.stats != NULL));
+}
+
+static void test_general_macros(void)
+{
+    printf("\n== 通用宏 ==\n");
+
+    // cb_swap(T, a, b)：任意类型借一个临时变量交换。
+    int left = 1, right = 2;
+    cb_swap(int, left, right);
+    printf("cb_swap(int, 1, 2) 之后 left = %d, right = %d\n", left, right);
+
+    const char* word_a = "alpha";
+    const char* word_b = "beta";
+    cb_swap(const char*, word_a, word_b);
+    printf("cb_swap(const char*, \"alpha\", \"beta\") 之后 = %s %s\n", word_a, word_b);
+
+    // cb_shift(argv, argc)：取走第一个参数并把指针前移、计数减一（bash 的 shift）。
+    const char* argv_like[] = {"prog", "first", "second"};
+    const char** arg_ptr = argv_like;
+    int arg_count = (int)CB_ARRAY_LEN(argv_like);
+    const char* shifted = cb_shift(arg_ptr, arg_count);
+    printf("cb_shift 取到 \"%s\", 之后 count = %d, *ptr = %s\n", shifted, arg_count, *arg_ptr);
+
+    // CB_ARRAY_GET(array, index)：带断言的按下标读取。
+    int values[] = {10, 20, 30};
+    printf("CB_ARRAY_GET(values, 1) = %d, CB_ARRAY_LEN(values) = %zu\n",
+           CB_ARRAY_GET(values, 1), (size_t)CB_ARRAY_LEN(values));
+
+    // CB_LINE_END 是宿主的换行（Linux "\\n"、Windows "\\r\\n"）。toolbox 的 golden 不分平台，
+    // 所以只打印与平台无关的事实：结尾一定是 '\\n'，长度是 1 或 2。
+    size_t line_end_len = strlen(CB_LINE_END);
+    printf("CB_LINE_END 以 '\\n' 结尾 = %d, 长度是 1 或 2 = %d\n",
+           (int)(line_end_len > 0 && CB_LINE_END[line_end_len - 1] == '\n'),
+           (int)(line_end_len == 1 || line_end_len == 2));
+
+    // CB_PROCESS_ID() 每次运行都不同，只断言它有效、同一次运行内稳定。
+    unsigned long pid_first = CB_PROCESS_ID();
+    unsigned long pid_second = CB_PROCESS_ID();
+    printf("CB_PROCESS_ID() > 0 = %d, 两次调用相同 = %d\n",
+           (int)(pid_first > 0), (int)(pid_first == pid_second));
+}
+
 static void test_random(void)
 {
     printf("\n== 随机数 ==\n");
@@ -199,10 +355,12 @@ int main(void)
 {
     test_math();
     test_time();
+    test_timer();
     test_random();
     test_env();
     test_dump();
     test_args();
+    test_general_macros();
 
     return 0;
 }

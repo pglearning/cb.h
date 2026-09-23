@@ -30,6 +30,14 @@ init_capacity(1000) 后 capacity = 2048（>= 1000*4/3 = 1）
 遍历访问到 500 条，值总和 = 124750
 遍历空 map 访问到 0 条
 
+== CB_Map 手工迭代与槽位状态 ==
+CB_MAP_EMPTY = 0, CB_MAP_USED = 1, CB_MAP_TOMBSTONE = 2
+cb_map_iter 之后 it.index = 0，it.map 指向原 map = 1
+cb_map_next 循环访问到 8 条，值总和 = 280，每个键都非空 = 1
+与 cb_map_count 一致 = 1，遍历结束后 it.index = 16
+槽位状态统计（capacity = 16）：USED = 8，TOMBSTONE = 0，EMPTY = 8
+删除一条后：count = 7，USED = 7，TOMBSTONE = 1，EMPTY = 8
+
 == CB_Map 扩容 ==
 插入 5000 条后 count = 5000，capacity = 8192（>= 5000*4/3 = 1）
 扩容后查不到/值不对的条数 = 0
@@ -53,3 +61,31 @@ get 不存在的键 1 -> 0
 splitmix64 打散后 capacity = 2048（<= 4096 = 1）
 u64 map 遍历到 1000 条
 u64 map free 后 slots == NULL = 1
+
+== CB_Map_U64 预分配 / arena / count / clear ==
+cb_map_u64_init_capacity(1000) 后 capacity = 2048（>= 1000*4/3 = 1）
+插入 500 条后 cb_map_u64_count = 500，capacity 未增长 = 1
+预分配后查不到/值不对的条数 = 0
+cb_map_u64_clear 后 count = 0，capacity = 2048（保留容量）
+clear 后查不到 key 1 -> 0
+clear 后复用同一张表：get(7) -> 1，值 = 77
+free 之后再查 -> 0，slots == NULL = 1
+全零（CB_ZERO）map：cb_map_u64_count = 0，capacity = 0
+arena 后端插入 200 条后 count = 200，capacity 是 2 的幂 = 1
+内存确实来自 arena（arena.begin != NULL）= 1
+arena 后端 get(200) -> 1，值 = 100
+free 摘掉 arena 句柄 slots==NULL/arena==NULL = 1/1
+cb_map_u64_iter 之后 it.index = 0，it.map 指向原 map = 1
+cb_map_u64_next 循环访问到 6 条，key 和 = 21，value 和 = 63
+与 cb_map_u64_count 一致 = 1
+u64 槽位：USED = 6，EMPTY = 10，capacity = 16
+
+== cb_hash_bytes / cb_hash_u64（固定值）==
+cb_hash_u64(0) = 16294208416658607535
+cb_hash_u64(1) = 10451216379200822465
+cb_hash_u64(UINT64_MAX) = 16490336266968443936
+相邻键被打散（hash(1) != hash(2)）= 1
+cb_hash_bytes("", 0) = 1469598103934665603
+cb_hash_bytes("hello", 5) = 25347132070217633
+长度参与哈希（4 字节与 5 字节不同）= 1
+NUL 也是数据（"a\0b" 与 "a" 不同）= 1

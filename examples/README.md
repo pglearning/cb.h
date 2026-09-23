@@ -1,33 +1,59 @@
 # cb.h examples
 
-Every example is a standalone program: it includes `cb.h` (with `CB_IMPLEMENTATION`, the stb-style
-switch) and is compiled on its own. Examples that build something write their outputs under
-`build/examples/<name>/`, so the repository root stays clean.
+`examples/` holds build-script examples only: two scripts plus the two demo projects they build.
+Everything that demonstrates a runtime API (containers, strings, file system, logging, ...) lives
+in `tests/`, where every test prints its results and is compared against a recorded golden output.
+
+Run them from the repository root; the paths in `projects[]` are relative to the working directory:
 
 ```sh
-cc -std=c99 -D_POSIX_C_SOURCE=200112L -I. examples/01_multi_project.c -o build/01_multi_project
-./build/01_multi_project
+cc -std=c99 -D_POSIX_C_SOURCE=200112L -I. examples/01_single_project.c -o build/01_single_project
+./build/01_single_project   # builds ./bin/core.so
+./build/02_multi_project    # builds ./bin/core.so and ./bin/app, then runs the app
 ```
 
 | File | What it shows |
 | --- | --- |
-| `01_multi_project.c` | One table of projects (source dir, include dirs, link inputs, extra flags, optional run), sources collected recursively with `cb_walk_dir`, self-rebuilding build script |
-| `02_single_project.c` | The minimal build: `cb_cc` / `cb_cc_flags` / `cb_cc_output` / `cb_cc_inputs` / `cb_cmd_run`, plus `cb_needs_rebuild` to skip work |
-| `03_two_stage.c` | Generate a header from the build script, then compile a program that includes it |
-| `04_build_api.c` | `CB_Cmd` options: render, `dont_reset`, redirection, raw fds, async runs with `max_procs`, `cb_chain_*` pipelines |
-| `05_containers.c` | Dynamic arrays, sorting, bitset, ring buffer, `CB_Map` and `CB_Map_U64` |
-| `06_strings.c` | `CB_String_Builder`, `CB_String_View`, UTF-8 helpers, case/parse/split/join tools |
-| `07_filesystem.c` | `cb_walk_dir` (SKIP/STOP), paths, `cb_glob`, metadata, atomic write, symlink, mmap |
-| `08_memory.c` | Arena, temp storage, `CB_ALLOC_TRACK` reporting |
-| `09_logging.c` | Levels, `CB_LOG_AT`, the built-in handlers and a custom one |
-| `10_toolbox.c` | Math/bits, time and date, RNG, environment, hex dump, CLI argument parsing |
-| `11_config_switches.c` | The compile-time switches and the small macros (`CB_ARRAY_LEN`, `CB_ZERO`, `cb_swap`, `cb_shift`, `CB_UNUSED`) |
+| `01_single_project.c` | One `Project` entry: a shared library built from a project directory |
+| `02_multi_project.c` | Two entries: the library first, then the app that links it (include dir, link input, run step) |
 
-Notes that apply to all of them:
+## The shape of a build script
 
-- `CB_IMPLEMENTATION` must be defined in exactly one translation unit before including `cb.h`; every
-  other `.c` of the same program includes it without the switch.
-- Building with strict `-std=c99` needs `-D_POSIX_C_SOURCE=200112L` on Linux; `cb_cc_flags` already
-  puts it on the command line it generates for the targets it builds.
-- `cb.h` writes no output on its own; `CB_ENABLE_ECHO` makes file system and command operations
-  visible, which is what the `[INFO] CMD: ...` lines in these examples come from.
+```c
+typedef struct {
+    const char* const * extra_flags; // NULL-terminated switches, (const char* const[]){...}
+    const char* include_dir;         // becomes -I<dir>, may be NULL
+    const char* source_dir;          // walked recursively for the *.c inputs
+    const char* output;              // file name inside OUTPUT_FOLDER
+    bool should_run;                 // run the output after a successful build?
+    const char* run_arg;             // first argument of that run, may be NULL
+} Project;
+```
+
+- adding a project is one entry in `projects[]`; nothing else in the script changes;
+- `collect_sources` feeds the compiler inputs — only `.c`, a header must never be an input;
+  `collect_include` sits next to it for collecting a directory's `.h` files (the scripts do not call
+  it yet; hook it to `walk_dir` when header changes should also trigger a rebuild);
+- the command is `cc()` + `cc_flags()` + `cc_output()` (platform and language aware flags and `-o`),
+  then the sources, then `extra_flags` **last**: with `--as-needed` (Ubuntu's default) a library
+  listed before the objects that need it is dropped and the link fails;
+- `project_run` runs the built program and keeps its stdout next to it:
+  `./bin/<output>.stdout.txt`.
+
+| Demo project | Layout | Output |
+| --- | --- | --- |
+| `dynamic_library/` | `src/core.c`, `src/mathx.c`, `include/core.h` | `bin/core.so` |
+| `app/` | `src/main.c`, `src/report.c`, `include/report.h` | `bin/app`, plus `bin/app.stdout.txt` |
+
+## Notes
+
+- `CB_IMPLEMENTATION` in exactly one translation unit; `CB_ENABLE_ECHO` prints the generated
+  commands; `CB_STRIP_PREFIX` lets the script write `walk_dir()` / `cmd_run()` / `temp_sprintf()`
+  without the `cb_` prefix. Two names keep it: `ERROR` (mingw `<wingdi.h>`) and `log` (libm),
+  hence `cb_log(INFO, ...)`.
+- `examples/cb.h` is a copy of the root `cb.h`, not a symlink: a symlink breaks in a `cp -r` copy and
+  cannot be checked out on Windows. Keep them in sync with `cp cb.h examples/cb.h`;
+  `tools/verify-examples.sh` and CI fail when they differ.
+- Outputs land in `bin/` at the repository root, which is why `bin/` is ignored.
+- Windows / macOS: edit `output` and `extra_flags` in the table (`core.dll` with `-shared`,
+  `-Wl,-rpath,@loader_path` on macOS).

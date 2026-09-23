@@ -1,0 +1,33 @@
+
+== cb_cc / cb_cc_flags / cb_cc_output / cb_cc_inputs（覆盖默认实现）==
+CB_Cmd cmd = CB_ZERO; cmd.count = 0
+cb_cc(&cmd) 之后 cmd.count = 1
+cb_cc_flags(&cmd) 之后 cmd.count = 3
+cb_cc_output(&cmd, "test-out.bin") 之后 cmd.count = 5
+cb_cc_inputs(&cmd, "a.c", "b.c") 之后 cmd.count = 7
+  cmd.items[0] = test-cc
+  cmd.items[1] = -DFAKE=1
+  cmd.items[2] = -I.
+  cmd.items[3] = -o
+  cmd.items[4] = test-out.bin
+  cmd.items[5] = a.c
+  cmd.items[6] = b.c
+cb_cmd_to_sb(cmd) = |test-cc -DFAKE=1 -I. -o test-out.bin a.c b.c|
+
+== CB_REBUILD_URSELF：默认的自重建命令行 ==
+CB_ARRAY_LEN(CB_REBUILD_URSELF("rebuilt.bin", "self.c")) = 6
+至少含 binary_path 与 source_path 两项 = 1
+末项是 source_path("self.c") = 1
+binary_path("rebuilt.bin") 出现在倒数第二项 = 1
+首项（编译器名）非空 = 1
+
+== cb_needs_rebuild：输出与输入的时间戳 ==
+cb_write_entire_file("bf_in.txt", ...) -> 1
+cb_write_entire_file("bf_out.bin", ...) -> 1
+输出不存在 -> cb_needs_rebuild("no-such-out.bin", {"bf_in.txt"}, 1) = 1（1 = 需要重建）
+先写输入再写输出，输出不旧于输入 -> cb_needs_rebuild("bf_out.bin", {"bf_in.txt"}, 1) = 0（0 = 不需要重建）
+输入不存在 -> cb_needs_rebuild("bf_out.bin", {"no-such-input.txt"}, 1) = -1（-1 = 出错）
+
+== CB_SELF_REBUILD / cb__self_rebuild ==
+argc > 0（cb__self_rebuild 内部用 cb_shift(argv, argc) 取 argv[0]）-> 1
+cb__self_rebuild(argc, argv, argv[0], NULL) 已返回：源不比二进制新 -> 没有重建

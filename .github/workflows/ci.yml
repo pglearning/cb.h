@@ -32,7 +32,7 @@ jobs:
     # 为什么单独一个 job：linux job 里 C++ 那两个组合已经在跑 ./cb test，但本地开发者
     # 通常只跑 C 模式，"指定初始化器顺序不对"和"{0} 在 C++ 下的告警"这两类问题就只会在
     # CI 上冒出来（C 下永远不报）。这个 job 把 C++ 那条路径固定下来：clang++/g++ ×
-    # c++17/c++20 各构建一次 cb、各跑一遍全部测试，要求 15/15 且 0 告警。
+    # c++17/c++20 各构建一次 cb、各跑一遍全部测试，要求全过（数字取自 ./cb list）且 0 告警。
     # 本地同一条命令：tools/verify-cxx-tests.sh
     runs-on: ubuntu-latest
     steps:

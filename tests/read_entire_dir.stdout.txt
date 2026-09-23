@@ -1,2 +1,61 @@
 output_paths[0] = dir2
 output_paths[1] = file1
+
+== cb_walk_dir（宏）与 cb_walk_dir_opt（直接调用）==
+CB_WALK_CONT = 0, CB_WALK_SKIP = 1, CB_WALK_STOP = 2
+cb_walk_dir("tree", walk_record, .data = &pre) -> 1
+pre-order：访问到 5 个条目（目录 3，普通文件 2，其它 0，SKIP 1 次）
+    level = 0, path = tree, type = dir
+    level = 1, path = tree/root.txt, type = file
+    level = 1, path = tree/skip, type = dir
+    level = 1, path = tree/sub, type = dir
+    level = 2, path = tree/sub/inner.txt, type = file
+pre-order 语义：根最先访问 = 1，父目录排在子项之前 = 1，被 SKIP 的 skip/ 子树访问条数 = 0
+cb_walk_dir_opt("tree", walk_record, {.data = &post, .post_order = true}) -> 1
+post-order：访问到 6 个条目（目录 3，普通文件 3，其它 0，SKIP 1 次）
+    level = 0, path = tree, type = dir
+    level = 1, path = tree/root.txt, type = file
+    level = 1, path = tree/skip, type = dir
+    level = 2, path = tree/skip/secret.txt, type = file
+    level = 1, path = tree/sub, type = dir
+    level = 2, path = tree/sub/inner.txt, type = file
+post-order 语义：根最后访问 = 1，父目录排在子项之后 = 1
+post-order 时 SKIP 已经来不及（子项在回调之前就被递归访问了）：skip/ 子树访问条数 = 1
+
+== 根带尾斜杠：不产生重复分隔符 ==
+cb_walk_dir("tree/", walk_record, .data = &trailing) -> 1
+root = "tree/"：访问到 5 个条目（目录 3，普通文件 2，其它 0，SKIP 1 次）
+    level = 0, path = tree/, type = dir
+    level = 1, path = tree/root.txt, type = file
+    level = 1, path = tree/skip, type = dir
+    level = 1, path = tree/sub, type = dir
+    level = 2, path = tree/sub/inner.txt, type = file
+双分隔符条目数 = 0（期望 0）
+cb_walk_dir("tree", walk_record, .data = &plain) -> 1
+两种根写法访问到的条目数：带斜杠 5，不带斜杠 5，相同 = 1
+
+== CB_WALK_STOP：哨兵目录终止整棵树 ==
+    访问 level = 0, path = stop_tree, type = dir
+    访问 level = 1, path = stop_tree/only, type = dir
+    访问 level = 2, path = stop_tree/only/sentinel, type = dir
+cb_walk_dir("stop_tree", walk_stop_on_sentinel, .data = &report) -> 1
+整棵树有 4 个条目，访问在哨兵 sentinel/ 处停止：实际访问 3 个 = 1
+哨兵里面的 never.txt 一次都没被访问 = 1（文件本身还在：1）
+清理 stop_tree（cb_delete_directory_recursively 内部就是后序 walk）-> 1
+stop_tree 已消失 = 1
+
+== cb_delete_walk_entry：作为 CB_Walk_Func 使用 ==
+先数一遍 del_tree（cb_walk_dir_opt + 计数回调）-> 1，条目数 = 4
+cb_walk_dir_opt("del_tree", cb_delete_walk_entry, .post_order = true) -> 1
+整棵树都被删除 = 1/1/1/1
+
+== cb_dir_entry_open / _next / _close：手工遍历 ==
+cb_dir_entry_open("tree") -> 1
+cb_dir_entry_next 读到 5 个名字，过滤 . 与 .. 后剩 3 个（这个 API 本身不过滤）
+正常读完时 dir.error = 0
+    条目[0] = root.txt
+    条目[1] = skip
+    条目[2] = sub
+cb_dir_entry_open("no-such-dir") -> 0，dir.error = 1
+
+清理 tree -> 1，tree 已消失 = 1

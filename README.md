@@ -67,18 +67,21 @@ $ ./cb list                # 列出测试
 $ ./cb help                # 列出命令
 ```
 
-15 个测试覆盖 arena / temp、动态数组 / 位图 / 环形缓冲 / 哈希表、字符串与 UTF-8、
-文件系统与路径、命令与管道（含 chain）、构建 API、CLI 参数等。
+19 个测试覆盖 arena / temp、动态数组 / 位图 / 环形缓冲 / 哈希表、字符串与 UTF-8、
+文件系统与路径（含 `walk_dir` 与 `walk_dir_opt` 两种写法）、命令 / 管道 / chain / 进程与 FD、
+构建 API 与自举重建、日志与 panic、`CB_ALLOC_TRACK`、计时器、CLI 参数等——凡是 cb.h 对外
+提供的 API 都在某个测试里至少被调用一次，golden 输出就是它的用法与结果。
 Windows 分支用 `tools/verify-windows.sh`（mingw-w64 交叉编译 + wine 实际运行）验证，
 内存与未定义行为用 `tools/verify-sanitizers.sh`（ASan + UBSan + LSan，加 `--examples`
 连示例一起查），C++ 模式（clang++ / g++ × c++17 / c++20）用 `tools/verify-cxx-tests.sh`，
-示例本身用 `tools/verify-examples.sh`（11 个示例 × 两遍：默认链接、
+示例本身用 `tools/verify-examples.sh`（2 个构建脚本 × 两遍：默认链接、
 以及给 `cc` 垫上 `-Wl,--as-needed` 复现 Ubuntu 的默认行为；`CC=` 与 `CB_LANG=c++` 可切编译器与语言）。
 
 ## 示例
 
-`examples/` 下 11 个可独立编译运行的程序：多项目构建脚本、单目标构建、两阶段生成、
-构建 API 全选项、容器、字符串、文件系统、内存、日志、工具箱、编译开关总览。
+`examples/` 下只有构建脚本示例：单项目（只构建动态库）与多项目（先动态库、再链接它的 app），
+以及它们构建的 `dynamic_library/` 与 `app/` 两个演示项目。该目录自带一份 `cb.h`，
+脚本按自身位置推导所有路径，因此整个目录被复制到别处也能直接编译运行。
 清单与构建命令见 [`examples/README.md`](examples/README.md)。
 
 ## 编译开关
@@ -92,9 +95,9 @@ Windows 分支用 `tools/verify-windows.sh`（mingw-w64 交叉编译 + wine 实�
 | --- | --- |
 | `cb.h` | 库本体：每一节都是「声明 + 紧跟自己的 `#ifdef CB_IMPLEMENTATION` 定义块」，别名区在文件末尾 |
 | `cb.c` | cb.h 自己的测试器（nob.c 式：`test` / `record` / `list` / `help`） |
-| `tests/` | 15 个测试与它们的 golden 输出（`*.win32.stdout.txt` 是平台差异覆盖） |
-| `examples/` | 11 个示例程序 |
-| `tools/` | 三条验证脚本（windows-cross / sanitizers / cxx-tests） |
+| `tests/` | 19 个测试与它们的 golden 输出（`*.win32.stdout.txt` 是平台差异覆盖）——这里也是全部 API 的用法示例 |
+| `examples/` | 2 个构建脚本示例 + `dynamic_library/`、`app/` 两个演示项目（自带一份 `cb.h`，可整目录复制走） |
+| `tools/` | 四条验证脚本（windows-cross / sanitizers / cxx-tests / examples） |
 | `_ref/nob.h` | 参照用的 nob.h 原型 |
 | `_backup/` | 重写前的初版与备份 |
 

@@ -11,14 +11,18 @@
 #define TESTS_FOLDER "./tests/"
 
 const char* test_names[] = {
+    "alloc_track",
     "arena",
+    "build_flags",
     "bytes_for_utf8",
     "chain",
     "dynamic_array",
     "error_paths",
     "fs",
+    "logging",
     "map",
     "nob_parity",
+    "procs",
     "read_entire_dir",
     "stdlib",
     "string_builder",

@@ -43,3 +43,11 @@ mkdir_p 嵌套创建 err_paths_work/a/b -> 1
 改名 y.txt -> z.txt -> 1
 删除 z.txt -> 1
 递归删除 err_paths_work -> 1
+
+== cb_return_defer：失败与成功都经过 defer: 标签 ==
+    （try_open("no-such-file.txt") 到达 defer: 标签，result = 0）
+try_open("no-such-file.txt") -> 0（文件不存在，跳到 defer: 返回 false）
+写 ok.txt -> 1
+    （try_open("ok.txt") 到达 defer: 标签，result = 1）
+try_open("ok.txt") -> 1，count = 10，内容 = |defer-data|
+删除 ok.txt 收尾 -> 1

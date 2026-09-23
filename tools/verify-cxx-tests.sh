@@ -6,7 +6,7 @@
 # ----
 # CI 的 linux job 用 C 与 C++ 两种语言模式构建 cb（`$cc -x c++ -o cb cb.c`）。
 # C++ 模式下 cb.c 里那份 cb_cc_flags 会带 -x c++，于是 `./cb test` 把全部测试当 C++
-# 编译——而本地开发者通常只跑 C 模式，于是出现"本地 15/15、CI 上 C++ job 全红"。
+# 编译——而本地开发者通常只跑 C 模式，于是出现"本地全绿、CI 上 C++ job 全红"。
 # 这个脚本把 C++ 那条路径搬到本地，提交前就能看见。
 #
 # 它抓到过的两类问题（都只在 C++ 下暴露，C 下永远不报）：
@@ -23,7 +23,7 @@
 # ----
 #   1. clang++ / g++ × c++17 / c++20 构建 cb.c：要求 0 错误 0 告警；
 #   2. 每个构建出的 cb 跑 `./cb test`：要求 N/N 全过（N 取自 `./cb list`，不写死数字）
-#      且编译这 15 个测试时 0 告警；
+#      且编译全部测试时 0 告警；
 #   3. 再用 clang++ / g++ 直接把这批 tests/*.c 编成 C++：要求 0 告警。
 #      `./cb test` 用的 cc 在多数机器上是 gcc，clang 专有的告警只有这样才抓得到；
 #   4. 同样扫一遍 examples/。
@@ -66,7 +66,7 @@ run_capture() {
     fi
     if printf '%s' "$out" | grep -qE "$WARN_RE"; then
         echo "   FAIL $desc（有告警或错误）"
-        printf '%s\n' "$out" | grep -E "$WARN_RE" | head -20
+        printf '%s\n' "$out" | grep -E "$WARN_RE" | head -20 || true
         failed=$((failed + 1))
         return 1
     fi
@@ -130,7 +130,7 @@ for spec in "${SWEEP_SPECS[@]}"; do
         out=$($spec -Wall -Wextra -Wswitch-enum -I. -x c++ -fsyntax-only "$src" 2>&1)
         if printf '%s' "$out" | grep -qE "$WARN_RE"; then
             echo "   FAIL $spec $src"
-            printf '%s\n' "$out" | grep -E "$WARN_RE" | head -8
+            printf '%s\n' "$out" | grep -E "$WARN_RE" | head -8 || true
             bad=$((bad + 1))
         fi
     done

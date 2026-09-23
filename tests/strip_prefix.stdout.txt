@@ -1,7 +1,7 @@
 
 == 类型 / 宏 / 常量 ==
 String_View + SVLIT 可用（类型名去掉了 CB_ 前缀）: count = 9
-String_Builder 可用: count = 11, items = |hello world|
+String_Builder 可用: count = 12, items = |hello world|
 ARRAY_LEN("abc") = 4
 日志级别常量可用（ERROR 因系统头占用而保留前缀）: INFO = 0, WARN = 1, CB_ERROR = 2, NO_LOGS = 3
 

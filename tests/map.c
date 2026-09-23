@@ -272,14 +272,195 @@ static void test_map_u64(void)
     printf("u64 map free 后 slots == NULL = %d\n", (int)(m.slots == NULL));
 }
 
+// cb_map_foreach 展开成同一个 for 循环；这里手工调用 cb_map_iter/cb_map_next，
+// 并顺带按状态数一遍 CB_Map_Slot 数组（CB_MAP_EMPTY/CB_MAP_USED/CB_MAP_TOMBSTONE）。
+static void test_map_manual_iter(void)
+{
+    printf("\n== CB_Map 手工迭代与槽位状态 ==\n");
+
+    CB_Map m = CB_ZERO;
+    for (int i = 0; i < 8; ++i) {
+        char key[8];
+        snprintf(key, sizeof(key), "mk%d", i);
+        cb_map_put_cstr(&m, key, (void*)(intptr_t)(i * 10));
+    }
+
+    printf("CB_MAP_EMPTY = %d, CB_MAP_USED = %d, CB_MAP_TOMBSTONE = %d\n", (int)CB_MAP_EMPTY,
+           (int)CB_MAP_USED, (int)CB_MAP_TOMBSTONE);
+
+    CB_Map_Iter it = cb_map_iter(&m);
+    printf("cb_map_iter 之后 it.index = %zu，it.map 指向原 map = %d\n", it.index, (int)(it.map == &m));
+
+    size_t visited = 0;
+    int64_t sum = 0;
+    bool keys_ok = true;
+    while (cb_map_next(&it)) {
+        visited += 1;
+        sum += (int64_t)(intptr_t)it.value;
+        // it.key 指向 map 自己持有的键拷贝，不是插入时用的那份
+        if (it.key.data == NULL || it.key.count == 0) keys_ok = false;
+    }
+    printf("cb_map_next 循环访问到 %zu 条，值总和 = %lld，每个键都非空 = %d\n", visited, (long long)sum,
+           (int)keys_ok);
+    printf("与 cb_map_count 一致 = %d，遍历结束后 it.index = %zu\n", (int)(visited == cb_map_count(&m)),
+           it.index);
+
+    size_t used = 0;
+    size_t tombstones = 0;
+    size_t empty = 0;
+    for (size_t i = 0; i < m.capacity; ++i) {
+        CB_Map_Slot* slot = &m.slots[i];
+        switch (slot->state) {
+        case CB_MAP_EMPTY:
+            empty += 1;
+            break;
+        case CB_MAP_USED:
+            used += 1;
+            break;
+        case CB_MAP_TOMBSTONE:
+            tombstones += 1;
+            break;
+        default:
+            break;
+        }
+    }
+    printf("槽位状态统计（capacity = %zu）：USED = %zu，TOMBSTONE = %zu，EMPTY = %zu\n", m.capacity, used,
+           tombstones, empty);
+
+    cb_map_del(&m, cb_sv_from_cstr("mk3"));
+    used = 0;
+    tombstones = 0;
+    empty = 0;
+    for (size_t i = 0; i < m.capacity; ++i) {
+        CB_Map_Slot* slot = &m.slots[i];
+        if (slot->state == CB_MAP_USED) used += 1;
+        if (slot->state == CB_MAP_TOMBSTONE) tombstones += 1;
+        if (slot->state == CB_MAP_EMPTY) empty += 1;
+    }
+    printf("删除一条后：count = %zu，USED = %zu，TOMBSTONE = %zu，EMPTY = %zu\n", cb_map_count(&m), used,
+           tombstones, empty);
+
+    cb_map_free(&m);
+}
+
+// 两个哈希都是纯函数（FNV-1a 64 与 splitmix64 终混），打印固定值即可当回归基线。
+static void test_map_hashes(void)
+{
+    printf("\n== cb_hash_bytes / cb_hash_u64（固定值）==\n");
+
+    printf("cb_hash_u64(0) = %llu\n", (unsigned long long)cb_hash_u64(0));
+    printf("cb_hash_u64(1) = %llu\n", (unsigned long long)cb_hash_u64(1));
+    printf("cb_hash_u64(UINT64_MAX) = %llu\n", (unsigned long long)cb_hash_u64(UINT64_MAX));
+    printf("相邻键被打散（hash(1) != hash(2)）= %d\n", (int)(cb_hash_u64(1) != cb_hash_u64(2)));
+
+    printf("cb_hash_bytes(\"\", 0) = %llu\n", (unsigned long long)cb_hash_bytes("", 0));
+    printf("cb_hash_bytes(\"hello\", 5) = %llu\n", (unsigned long long)cb_hash_bytes("hello", 5));
+    printf("长度参与哈希（4 字节与 5 字节不同）= %d\n",
+           (int)(cb_hash_bytes("hello", 4) != cb_hash_bytes("hello", 5)));
+    printf("NUL 也是数据（\"a\\0b\" 与 \"a\" 不同）= %d\n",
+           (int)(cb_hash_bytes("a\0b", 3) != cb_hash_bytes("a", 1)));
+}
+
+// u64 map 的两条预分配路径：init_capacity（堆）与 init_arena（arena 后端），
+// 外加 cb_map_u64_count / cb_map_u64_clear / 手工 cb_map_u64_iter 循环。
+static void test_map_u64_backends(void)
+{
+    printf("\n== CB_Map_U64 预分配 / arena / count / clear ==\n");
+
+    CB_Map_U64 m = CB_ZERO;
+    void* v = NULL;
+
+    cb_map_u64_init_capacity(&m, 1000);
+    size_t capacity_before = m.capacity;
+    printf("cb_map_u64_init_capacity(1000) 后 capacity = %zu（>= 1000*4/3 = %d）\n", m.capacity,
+           (int)(m.capacity >= 1000 * 4 / 3));
+
+    for (uint64_t i = 0; i < 500; ++i) cb_map_u64_put(&m, i, (void*)(intptr_t)i);
+    printf("插入 500 条后 cb_map_u64_count = %zu，capacity 未增长 = %d\n", cb_map_u64_count(&m),
+           (int)(m.capacity == capacity_before));
+
+    size_t bad = 0;
+    for (uint64_t i = 0; i < 500; ++i) {
+        v = NULL;
+        if (!cb_map_u64_get(&m, i, &v) || (intptr_t)v != (intptr_t)i) bad += 1;
+    }
+    printf("预分配后查不到/值不对的条数 = %zu\n", bad);
+
+    cb_map_u64_clear(&m);
+    printf("cb_map_u64_clear 后 count = %zu，capacity = %zu（保留容量）\n", cb_map_u64_count(&m), m.capacity);
+    v = NULL;
+    printf("clear 后查不到 key 1 -> %d\n", (int)cb_map_u64_get(&m, 1, &v));
+
+    cb_map_u64_put(&m, 7, (void*)(intptr_t)77);
+    v = NULL;
+    bool reused = cb_map_u64_get(&m, 7, &v);
+    printf("clear 后复用同一张表：get(7) -> %d，值 = %lld\n", (int)reused, (long long)(intptr_t)v);
+
+    cb_map_u64_free(&m);
+    printf("free 之后再查 -> %d，slots == NULL = %d\n", (int)cb_map_u64_get(&m, 7, &v),
+           (int)(m.slots == NULL));
+
+    CB_Map_U64 empty = CB_ZERO;
+    printf("全零（CB_ZERO）map：cb_map_u64_count = %zu，capacity = %zu\n", cb_map_u64_count(&empty),
+           empty.capacity);
+
+    CB_Arena arena = CB_ZERO;
+    CB_Map_U64 am = CB_ZERO;
+    cb_map_u64_init_arena(&am, &arena, 0);
+    for (uint64_t i = 0; i < 200; ++i) cb_map_u64_put(&am, i * 2, (void*)(intptr_t)i);
+    printf("arena 后端插入 200 条后 count = %zu，capacity 是 2 的幂 = %d\n", cb_map_u64_count(&am),
+           (int)((am.capacity & (am.capacity - 1)) == 0));
+    printf("内存确实来自 arena（arena.begin != NULL）= %d\n", (int)(arena.begin != NULL));
+
+    v = NULL;
+    bool got = cb_map_u64_get(&am, 200, &v);
+    printf("arena 后端 get(200) -> %d，值 = %lld\n", (int)got, (long long)(intptr_t)v);
+
+    cb_map_u64_free(&am);
+    printf("free 摘掉 arena 句柄 slots==NULL/arena==NULL = %d/%d\n", (int)(am.slots == NULL),
+           (int)(am.arena == NULL));
+    cb_arena_free(&arena);
+
+    CB_Map_U64 seq = CB_ZERO;
+    for (uint64_t i = 1; i <= 6; ++i) cb_map_u64_put(&seq, i, (void*)(intptr_t)(i * 3));
+
+    CB_Map_U64_Iter it = cb_map_u64_iter(&seq);
+    printf("cb_map_u64_iter 之后 it.index = %zu，it.map 指向原 map = %d\n", it.index, (int)(it.map == &seq));
+
+    size_t visited = 0;
+    unsigned long long key_sum = 0;
+    unsigned long long value_sum = 0;
+    while (cb_map_u64_next(&it)) {
+        visited += 1;
+        key_sum += (unsigned long long)it.key;
+        value_sum += (unsigned long long)(intptr_t)it.value;
+    }
+    printf("cb_map_u64_next 循环访问到 %zu 条，key 和 = %llu，value 和 = %llu\n", visited, key_sum, value_sum);
+    printf("与 cb_map_u64_count 一致 = %d\n", (int)(visited == cb_map_u64_count(&seq)));
+
+    size_t used = 0;
+    size_t empty_slots = 0;
+    for (size_t i = 0; i < seq.capacity; ++i) {
+        CB_Map_U64_Slot* slot = &seq.slots[i];
+        if (slot->state == CB_MAP_USED) used += 1;
+        if (slot->state == CB_MAP_EMPTY) empty_slots += 1;
+    }
+    printf("u64 槽位：USED = %zu，EMPTY = %zu，capacity = %zu\n", used, empty_slots, seq.capacity);
+
+    cb_map_u64_free(&seq);
+}
+
 int main(void)
 {
     test_map_basic();
     test_map_delete();
     test_map_iter();
+    test_map_manual_iter();
     test_map_grow();
     test_map_arena();
     test_map_u64();
+    test_map_u64_backends();
+    test_map_hashes();
 
     return 0;
 }

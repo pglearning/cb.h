@@ -1,0 +1,77 @@
+
+== cb_set_log_handler / cb_get_log_handler / cb_log_handler ==
+cb_get_log_handler() == cb_default_log_handler -> 1
+cb_log_handler == cb_get_log_handler() -> 1
+cb_cancer_log_handler != cb_null_log_handler -> 1
+cb_default_log_handler != cb_null_log_handler -> 1
+cb_set_log_handler(stdout_log_handler) -> cb_get_log_handler() == stdout_log_handler -> 1
+CB_Log_Handler* custom = stdout_log_handler; cb_set_log_handler(custom) -> cb_get_log_handler() == custom -> 1
+cb_log(CB_INFO, "info %d", 1):
+  | level=0 (CB_INFO) file=(none) line=0 msg=info 1
+cb_log(CB_WARN, "warn %s", "two"):
+  | level=1 (CB_WARN) file=(none) line=0 msg=warn two
+cb_log(CB_ERROR, "error %.2f", 3.5):
+  | level=2 (CB_ERROR) file=(none) line=0 msg=error 3.50
+cb_log(CB_NO_LOGS, "no-logs %d", 4):
+  | level=3 (CB_NO_LOGS) file=(none) line=0 msg=no-logs 4
+cb_log_at(CB_ERROR, "config/module.c", 42, "bad value %d", 7):
+  | level=2 (CB_ERROR) file=config/module.c line=42 msg=bad value 7
+CB_LOG_AT(CB_WARN, "from macro %s", "here") (__FILE__/__LINE__ added by the macro):
+  | level=1 (CB_WARN) file=logging.c line=139 msg=from macro here
+handler calls = 6
+
+== cb_minimal_log_level is read by the handlers, not by cb_log ==
+cb_minimal_log_level = CB_ERROR, a custom handler still receives everything:
+  | level=0 (CB_INFO) file=(none) line=0 msg=CB_INFO is delivered to a custom handler
+  | level=3 (CB_NO_LOGS) file=(none) line=0 msg=CB_NO_LOGS too
+handler calls = 8
+cb_log_handler = stdout_log_handler; cb_log(CB_WARN, "via the global"):
+  | level=1 (CB_WARN) file=(none) line=0 msg=via the global
+cb_log_handler == cb_get_log_handler() -> 1
+cb_set_log_handler(cb_null_log_handler) -> cb_get_log_handler() == cb_null_log_handler -> 1
+cb_log(CB_ERROR, "discarded by the null handler"):
+(no "  | " line above: cb_null_log_handler prints nothing)
+
+== cb_default_log_handler: prefixes and cb_minimal_log_level ==
+cb_set_log_handler(cb_default_log_handler) -> cb_get_log_handler() == cb_default_log_handler -> 1
+cb_minimal_log_level = CB_INFO, then cb_log(CB_INFO/CB_WARN/CB_ERROR/CB_NO_LOGS, ...):
+  | [INFO] info message 1
+  | [WARN] warn message two
+  | [ERROR] error message 3.5
+  -> 3 line(s) captured from stderr
+cb_minimal_log_level = CB_WARN, same four calls:
+  | [WARN] warn message two
+  | [ERROR] error message 3.5
+  -> 2 line(s) captured from stderr
+cb_minimal_log_level = CB_ERROR, same four calls:
+  | [ERROR] error message 3.5
+  -> 1 line(s) captured from stderr
+cb_minimal_log_level = CB_NO_LOGS, same four calls:
+  -> 0 line(s) captured from stderr
+cb_minimal_log_level = CB_NO_LOGS silences every level; restored to CB_INFO
+cb_log_at(CB_WARN, "config/module.c", 42, "bad value %d", 7):
+  | [WARN] config/module.c:42: bad value 7
+  -> 1 line(s) captured from stderr
+CB_LOG_AT(CB_ERROR, "from macro %s", "here"):
+  | [ERROR] logging.c:222: from macro here
+  -> 1 line(s) captured from stderr
+
+== cb_cancer_log_handler: emoji/colors only on a terminal ==
+cb_set_log_handler(cb_cancer_log_handler) -> cb_get_log_handler() == cb_cancer_log_handler -> 1
+stderr is a file, so isatty(stderr) is 0; cb_log(CB_INFO/CB_WARN/CB_ERROR/CB_NO_LOGS, ...):
+  | [INFO] info message 1
+  | [WARN] warn message two
+  | [ERROR] error message 3.5
+  -> 3 line(s) captured from stderr
+(redirected, the cancer handler produces the same plain prefixes as the default one)
+
+== cb_null_log_handler ==
+cb_set_log_handler(cb_null_log_handler) -> cb_get_log_handler() == cb_null_log_handler -> 1
+cb_log(CB_INFO, ...), cb_log(CB_ERROR, ...), cb_log_at(CB_ERROR, "config.c", 7, ...):
+  -> 0 line(s) captured from stderr
+cb_set_log_handler(cb_default_log_handler); cb_minimal_log_level = CB_INFO
+
+== cb__panicf / CB_TODO / CB_UNREACHABLE ==
+cb__panicf("panic_demo.c", 77, "TODO", "explicit panic %d", 3) -> skipped on this platform (no fork())
+CB_TODO("not implemented yet: %s", "feature") -> skipped on this platform (no fork())
+CB_UNREACHABLE("this branch must never run") -> skipped on this platform (no fork())

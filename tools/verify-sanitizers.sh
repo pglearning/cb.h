@@ -33,8 +33,9 @@ SAN=${SAN:-address,undefined,pointer-overflow}
 BUILD_DIR=${BUILD_DIR:-$(mktemp -d)}
 
 # 与 cb.c 里的 test_names[] 保持一致
-ALL_TESTS=(arena bytes_for_utf8 chain dynamic_array error_paths fs map nob_parity
-           read_entire_dir stdlib string_builder string_view strip_prefix temp_storage toolbox)
+ALL_TESTS=(alloc_track arena build_flags bytes_for_utf8 chain dynamic_array error_paths fs
+           logging map nob_parity procs read_entire_dir stdlib string_builder string_view
+           strip_prefix temp_storage toolbox)
 
 if [ "$#" -gt 0 ]; then
     TESTS=("$@")
@@ -69,7 +70,7 @@ if [ "${1:-}" = "--examples" ]; then
         out=$(timeout 300 "$BUILD_DIR/$name" 2>&1) || true
         if echo "$out" | grep -qE "runtime error|AddressSanitizer|LeakSanitizer"; then
             echo "   FAIL $name"
-            echo "$out" | grep -E "runtime error|AddressSanitizer|LeakSanitizer|cb\.h:[0-9]+" | head -12
+            echo "$out" | grep -E "runtime error|AddressSanitizer|LeakSanitizer|cb\.h:[0-9]+" | head -12 || true
             failed=$((failed + 1))
         else
             echo "   ok   $name"
@@ -106,7 +107,7 @@ for name in "${TESTS[@]}"; do
 
     if echo "$out" | grep -qE "runtime error|AddressSanitizer|LeakSanitizer|FAILED"; then
         echo "   FAIL $name"
-        echo "$out" | grep -E "runtime error|AddressSanitizer|LeakSanitizer|FAILED|cb\.h:[0-9]+" | head -12
+        echo "$out" | grep -E "runtime error|AddressSanitizer|LeakSanitizer|FAILED|cb\.h:[0-9]+" | head -12 || true
         failed=$((failed + 1))
     else
         echo "   ok   $name"
