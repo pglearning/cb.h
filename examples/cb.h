@@ -687,6 +687,8 @@ CBDEF char* cb_temp_sprintf(const char* fmt, ...)
 
 typedef enum {
     CB_INFO,
+    CB_TRACE,
+    CB_DEBUG,
     CB_WARN,
     CB_ERROR,
     CB_NO_LOGS,
@@ -792,6 +794,8 @@ CBDEF void cb_default_log_handler(CB_Log_Level level, const char* file, int line
     const char* prefix = NULL;
     switch (level) {
     case CB_INFO:    prefix = "[INFO] ";  break;
+    case CB_TRACE:    prefix = "[TRACE] ";  break;
+    case CB_DEBUG:    prefix = "[DEBUG] ";  break;
     case CB_WARN:    prefix = "[WARN] ";  break;
     case CB_ERROR:   prefix = "[ERROR] "; break;
     case CB_NO_LOGS: return;
@@ -822,6 +826,8 @@ CBDEF void cb_cancer_log_handler(CB_Log_Level level, const char* file, int line,
     const char* prefix = NULL;
     switch (level) {
     case CB_INFO:    prefix = color ? "ℹ️ \x1b[36m[INFO]\x1b[0m "  : "[INFO] ";  break;
+    case CB_TRACE:    prefix = color ? "ℹ️ \x1b[35m[TRACE]\x1b[0m "  : "[TRACE] ";  break;
+    case CB_DEBUG:    prefix = color ? "ℹ️ \x1b[34m[DEBUG]\x1b[0m "  : "[DEBUG] ";  break;
     case CB_WARN:    prefix = color ? "⚠️ \x1b[33m[WARN]\x1b[0m "  : "[WARN] ";  break;
     case CB_ERROR:   prefix = color ? "🚨 \x1b[31m[ERROR]\x1b[0m " : "[ERROR] "; break;
     case CB_NO_LOGS: return;
